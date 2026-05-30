@@ -1,0 +1,45 @@
+# AI Stock Platform 📈🤖
+
+AI-powered stock prediction dashboard for Indian markets using:
+- FastAPI
+- React
+- XGBoost
+- Technical Indicators
+- Yahoo Finance API
+
+## Features
+- Live Indian stock data
+- AI stock price prediction
+- BUY / SELL signals
+- Technical indicators
+- React dashboard
+- FastAPI backend
+
+## Tech Stack
+Frontend:
+- React
+- Recharts
+- Axios
+
+Backend:
+- FastAPI
+- XGBoost
+- Pandas
+- TA-Lib / ta
+- yfinance
+
+## Run Backend
+
+cd backend
+
+uvicorn api.main:app --reload
+
+## Run Frontend
+
+cd frontend
+
+npm start
+
+## Example API
+
+http://127.0.0.1:8000/predict/RELIANCE.NS

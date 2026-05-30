@@ -1,38 +1,162 @@
-.App {
-  text-align: center;
+body {
+  margin: 0;
+  padding: 0;
+  background: #0d1117;
+  font-family: Arial, Helvetica, sans-serif;
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
-}
-
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
+.app {
+  padding: 25px;
   color: white;
 }
 
-.App-link {
-  color: #61dafb;
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30px;
+  flex-wrap: wrap;
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
+.header h1 {
+  margin: 0;
+  font-size: 32px;
+}
+
+.header p {
+  color: #888;
+  margin-top: 5px;
+}
+
+.searchBox {
+  display: flex;
+  gap: 10px;
+}
+
+.searchBox input {
+  padding: 12px;
+  border-radius: 8px;
+  border: none;
+  width: 220px;
+  background: #161b22;
+  color: white;
+}
+
+.searchBox button {
+  padding: 12px 18px;
+  border: none;
+  border-radius: 8px;
+  background: #00d4ff;
+  color: black;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 20px;
+  margin-bottom: 30px;
+}
+
+.card {
+  background: #161b22;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid #222;
+}
+
+.cardTitle {
+  color: #888;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.cardValue {
+  font-size: 28px;
+  font-weight: bold;
+}
+
+.blue {
+  color: #00d4ff;
+}
+
+.purple {
+  color: #a855f7;
+}
+
+.signal {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 28px;
+  font-weight: bold;
+}
+
+.buy {
+  color: #39ff14;
+}
+
+.sell {
+  color: #ff4444;
+}
+
+.mainGrid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 20px;
+}
+
+.chartCard {
+  background: #161b22;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid #222;
+}
+
+.sidePanel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.panelCard {
+  background: #161b22;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid #222;
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.analysisItem {
+  padding: 10px 0;
+  border-bottom: 1px solid #222;
+  color: #ccc;
+}
+
+.marketOpen {
+  color: #39ff14;
+  font-size: 24px;
+  font-weight: bold;
+}
+
+.loading {
+  font-size: 22px;
+  margin-top: 40px;
+}
+
+@media (max-width: 900px) {
+
+  .mainGrid {
+    grid-template-columns: 1fr;
   }
-  to {
-    transform: rotate(360deg);
-  }
+
 }
