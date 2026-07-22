@@ -272,6 +272,33 @@ def fetch_last_prices(symbols: list[str]) -> dict:
     return out
 
 
+def fetch_high_since(symbols: list[str], since_date: str) -> dict:
+    """{symbol: max daily High on/after since_date} — the post-breakout peak,
+    for judging whether a name genuinely ran up or just spiked and faded."""
+    syms = sorted({s.upper() for s in symbols})
+    if not syms: return {}
+    key = f"high:{since_date}:" + ",".join(syms)
+    hit, v = CACHE.get(key, TTL_PX)
+    if hit: return v
+
+    out: dict = {}
+    try:
+        multi = len(syms) > 1
+        raw = yf.download(syms, start=since_date, progress=False, timeout=15,
+                          group_by="ticker" if multi else "column")
+        for s in syms:
+            try:
+                highs = (raw[s]["High"] if multi else _flatten(raw)["High"]).dropna()
+                out[s] = round(float(highs.max()), 2) if len(highs) else None
+            except Exception:
+                out[s] = None
+    except Exception as exc:
+        log.warning("High-since fetch failed: %s", exc)
+        out = {s: None for s in syms}
+    CACHE.set(key, out)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Descriptive band (NO buy/sell, NO confidence)
 # ---------------------------------------------------------------------------
@@ -722,6 +749,8 @@ def weekly_breakouts(week: str = Query(default=None),
 
     symbols = [f"{str(s).strip().upper()}.NS" for s in df["Symbol"].tolist()]
     prices = fetch_last_prices(symbols)
+    since_date = (pd.to_datetime(chosen) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    peaks = fetch_high_since(symbols, since_date)
 
     rows = []
     for _, r in df.iterrows():
@@ -730,6 +759,8 @@ def weekly_breakouts(week: str = Query(default=None),
         bclose = _f(r.get("Close"))
         cur = px["last"] if px else None
         since = round((cur / bclose - 1) * 100, 2) if (cur and bclose) else None
+        peak = peaks.get(f"{sym}.NS")
+        peak_pct = round((peak / bclose - 1) * 100, 2) if (peak and bclose) else None
         rows.append({
             "symbol": sym,
             "score": _f(r.get("Score")),
@@ -744,6 +775,8 @@ def weekly_breakouts(week: str = Query(default=None),
             "gates": str(r.get("Gates Passed", "")),
             "current_price": round(cur, 2) if cur else None,
             "since_pct": since,
+            "high_since": peak,
+            "peak_pct": peak_pct,
             "spark": px.get("spark", []) if px else [],
             "stale": px is None,
         })

@@ -492,7 +492,9 @@ function WeeklyBreakoutsView() {
     { key: "score", label: "SCORE", numeric: true },
     { key: "breakout_close", label: "BREAKOUT ₹", numeric: true },
     { key: "current_price", label: "NOW ₹", numeric: true },
+    { key: "high_since", label: "HIGH ₹", numeric: true },
     { key: "since_pct", label: "SINCE %", numeric: true },
+    { key: "peak_pct", label: "PEAK %", numeric: true },
     { key: "week_return_pct", label: "WK RET %", numeric: true },
     { key: "vol_surge", label: "VOL ×", numeric: true },
     { key: "ret_4w", label: "4W %", numeric: true },
@@ -570,7 +572,9 @@ function WeeklyBreakoutsView() {
                   <td style={{ padding: "10px", textAlign: "right", fontWeight: 700 }}>{num(b.score)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }}>{num(b.breakout_close)}</td>
                   <td style={{ padding: "10px", textAlign: "right" }}>{b.stale ? <span style={{ color: "#f59e0b" }} title="live price unavailable">n/a</span> : num(b.current_price)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="highest price reached since the breakout">{num(b.high_since)}</td>
                   <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: b.since_pct == null ? "#475569" : pnlColor(b.since_pct) }}>{num(b.since_pct, "%", true)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", fontWeight: 700, color: b.peak_pct == null ? "#475569" : pnlColor(b.peak_pct) }} title="gain from breakout close to the post-breakout high">{num(b.peak_pct, "%", true)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: pnlColor(b.week_return_pct) }}>{num(b.week_return_pct, "%", true)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#f59e0b" }}>{num(b.vol_surge, "×")}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: pnlColor(b.ret_4w) }}>{num(b.ret_4w, "%", true)}</td>
@@ -601,7 +605,7 @@ function WeeklyBreakoutsView() {
         </div>
       )}
       <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12 }}>
-        SINCE % = live price vs. the breakout-week close ({week}) · SCORE, VOL ×, returns and gates from the weekly momentum screen · NSE names · descriptive, not advice.
+        SINCE % = live price vs. the breakout-week close ({week}) · HIGH ₹ / PEAK % = highest price reached since the breakout and its gain (a PEAK % well above SINCE % means the move spiked then faded) · SCORE, VOL ×, returns and gates from the weekly momentum screen · NSE names · descriptive, not advice.
       </div>
     </div>
   );
