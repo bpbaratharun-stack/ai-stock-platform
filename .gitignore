@@ -5,3 +5,6 @@ node_modules/
 __pycache__/
 *.pyc
 models/
+
+# Personal portfolio data — keep real holdings out of git (see holdings.example.json)
+backend/data/holdings.json

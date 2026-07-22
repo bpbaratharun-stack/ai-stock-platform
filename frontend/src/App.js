@@ -1,367 +1,926 @@
-import React, { useState, useEffect } from "react";
+/**
+ * NSE FACTOR SCREENER & RESEARCH TERMINAL  (frontend)
+ * Honest factor screener — descriptive rankings, no buy/sell.
+ * Screener now supports client-side filtering (band, RSI, trend, ticker, sector*)
+ * and click-to-sort columns. Includes the Gemini "Explain this profile" button.
+ * (*sector filter appears automatically once sector data is present.)
+ * Endpoints: /profile, /screener, /sector-factors, /explain.
+ */
+
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import axios from "axios";
 import Chart from "react-apexcharts";
+import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
 
-function App() {
-  // --- STATE LAYER MATRIX ---
-  const [symbol, setSymbol] = useState("RELIANCE.NS"); // Default inspected asset
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  
-  const [activeIndex, setActiveIndex] = useState("NIFTY50");
-  const [scannerData, setScannerData] = useState([]);
-  const [scannerLoading, setScannerLoading] = useState(false);
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
-  // --- CORE PREDICTIVE INFERENCE TRIGGER ---
-  // Fixes the async state update bug by accepting a direct ticker string override
-  const runAnalysis = async (tickerOverride = null) => {
-    try {
-      setLoading(true);
-      setData(null);
-      
-      const targetSymbol = tickerOverride || symbol;
-      const response = await axios.get(`http://127.0.0.1:8000/predict/${targetSymbol}`);
-      
-      setData(response.data);
-      setLoading(false);
-    } catch (error) {
-      console.error("API Error during asset prediction sequence:", error);
-      setLoading(false);
-    }
-  };
+const pctColor = (p) => {
+  if (p == null) return "#475569";
+  const t = Math.max(0, Math.min(100, p)) / 100;
+  return `hsl(180, 55%, ${30 + t * 35}%)`;
+};
+const rsiColor = (v) => (v > 70 ? "#ff4d4d" : v < 30 ? "#00e396" : "#94a3b8");
 
-  // --- BATCH SCANNER EXECUTOR ENGINE ---
-  const executeScan = async (indexName) => {
-    try {
-      setScannerLoading(true);
-      const response = await axios.get(`http://127.0.0.1:8000/scanner/${indexName}`);
-      setScannerData(response.data.results);
-      setScannerLoading(false);
-    } catch (error) {
-      console.error("API Error during index batch processing scanning loop:", error);
-      setScannerLoading(false);
-    }
-  };
+function useDebounce(fn, wait) {
+  const t = useRef(null);
+  return useCallback((...a) => { clearTimeout(t.current); t.current = setTimeout(() => fn(...a), wait); }, [fn, wait]);
+}
 
-  // Automatic baseline boot scans
-  useEffect(() => {
-    executeScan(activeIndex);
-    runAnalysis("RELIANCE.NS");
-  }, [activeIndex]);
+const COMMON_X = { type: "datetime",
+  labels: { style: { colors: "#64748b", fontFamily: "JetBrains Mono", fontSize: "10px" } },
+  axisBorder: { show: false }, axisTicks: { show: false } };
 
-  // --- AUTOMATIC TIME DOCK REFRESH CYCLE (30 SECONDS) ---
-  useEffect(() => {
-    const refreshInterval = setInterval(() => {
-      if (data && !loading) {
-        axios.get(`http://127.0.0.1:8000/predict/${symbol}`).then(res => setData(res.data));
-      }
-      executeScan(activeIndex);
-    }, 30000); // 30,000ms = 30 seconds
-
-    return () => clearInterval(refreshInterval);
-  }, [symbol, data, loading, activeIndex]);
-
-
-  // --- INTERACTIVE APEX CHARTS STYLE SUITE LAYOUTS ---
-  const getTechnicalSuiteOptions = () => {
-    const commonXAxis = { 
-      type: "datetime", 
-      labels: { style: { colors: "#64748b" } }, 
-      axisBorder: { show: false }, 
-      axisTicks: { show: false } 
-    };
-
-    return {
-      mainOptions: {
-        chart: { id: "candles", toolbar: { show: false }, background: "transparent" },
-        theme: { mode: "dark" },
-        stroke: { width: 1 },
-        xaxis: commonXAxis,
-        yaxis: { labels: { style: { colors: "#64748b" }, formatter: (val) => `₹${val.toFixed(2)}` } },
-        grid: { borderColor: "#1e293b" },
-        plotOptions: { 
-          candlestick: { 
-            colors: { upward: "#00e396", downward: "#ff4d4d" }, 
-            wick: { useFillColor: true } 
-          } 
-        }
-      },
-      gaugeOptions: {
-        chart: { type: "radialBar", background: "transparent" },
-        theme: { mode: "dark" },
-        plotOptions: {
-          radialBar: {
-            startAngle: -135,
-            endAngle: 135,
-            hollow: { size: "65%" },
-            track: { background: "#1e293b", strokeWidth: "100%" },
-            dataLabels: {
-              name: { show: true, color: "#64748b", fontSize: "11px", offsetY: 15 },
-              value: { show: true, color: "#fff", fontSize: "24px", fontWeight: "700", offsetY: -10 }
-            }
-          }
-        },
-        fill: { 
-          type: "solid", 
-          colors: [data?.signals.recommendation === "BUY" ? "#00e396" : (data?.signals.recommendation === "SELL" ? "#ff4d4d" : "#ffaa00")] 
-        },
-        labels: ["AI SCORING ENGINE"]
-      }
-    };
-  };
-
-  const options = getTechnicalSuiteOptions();
-
-  // Helper macro class styling badges
-  const getRegimeColor = (regime) => {
-    switch(regime) {
-      case "BULL_MARKET_STABLE": return "#00e396";
-      case "RISK_OFF_VOLATILE": return "#ff4d4d";
-      case "BEARISH_TREND_CHURN": return "#f59e0b";
-      default: return "#38bdf8";
-    }
-  };
-
+// ---------------------------------------------------------------------------
+function Disclaimer() {
   return (
-    <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: "24px", fontFamily: "Inter, system-ui, sans-serif" }}>
-      
-      {/* GLOBAL HEADER CONTROLLER LAYER */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px", borderBottom: "1px solid #1e293b", paddingBottom: "16px" }}>
-        <div>
-          <h1 style={{ fontSize: "24px", fontWeight: "800", margin: 0, letterSpacing: "-0.5px" }}>
-            QUANTITATIVE AI MARKET TERMINAL <span style={{ color: "#00d4ff", fontSize: "12px", border: "1px solid #00d4ff", padding: "2px 6px", borderRadius: "4px", marginLeft: "10px" }}>LIVE REFRESH ENGINE</span>
-          </h1>
-          <p style={{ color: "#64748b", fontSize: "12px", margin: "2px 0 0 0" }}>Systematic Event Analysis Layers & Multi-Threaded Index Pipeline Scanner</p>
-        </div>
+    <div style={{ background: "rgba(148,163,184,0.08)", border: "1px solid #334155",
+      color: "#94a3b8", padding: "10px 14px", borderRadius: 6, fontSize: 11,
+      fontFamily: "JetBrains Mono", marginBottom: 18, lineHeight: 1.5 }}>
+      ⓘ Factor rankings are descriptive screening metrics — not buy/sell advice or return forecasts.
+      Backtesting found no return-predictive edge in these signals. Do your own research.
+    </div>
+  );
+}
 
-        <div style={{ display: "flex", gap: "10px" }}>
-          <input
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            placeholder="e.g. RELIANCE.NS"
-            style={{ padding: "8px 12px", borderRadius: "6px", border: "1px solid #1e293b", background: "#0f172a", color: "white", fontWeight: "600", fontSize: "14px", width: "150px" }}
-          />
-          <button 
-            onClick={() => runAnalysis(symbol)} 
-            disabled={loading} 
-            style={{ background: "#00d4ff", color: "#020617", border: "none", padding: "8px 16px", borderRadius: "6px", fontWeight: "700", cursor: "pointer", fontSize: "14px" }}
-          >
-            {loading ? "Analyzing..." : "Verify Security"}
-          </button>
-        </div>
-      </div>
-
-      {/* CORE DISPLAY SECTION GRID SPLIT */}
-      <div style={{ display: "grid", gridTemplateColumns: "3.2fr 1fr", gap: "20px" }}>
-        
-        {/* LEFT COMPUTE COLUMN LAYOUT */}
-        <div>
-          {data ? (
-            <>
-              {/* PRIMARY STATISTICAL KPI CORE BANNER STRIP */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "14px", marginBottom: "20px" }}>
-                <div style={{ background: "#0b0f19", padding: "16px", borderRadius: "10px", border: "1px solid #1e293b" }}>
-                  <span style={{ color: "#64748b", fontSize: "10px", fontWeight: "700", letterSpacing: "0.5px" }}>ASSET SPECIFICATION</span>
-                  <h3 style={{ margin: "4px 0 0 0", fontSize: "18px" }}>{data.symbol} : ₹{data.meta.current_price}</h3>
-                </div>
-
-                <div style={{ background: "#0b0f19", padding: "16px", borderRadius: "10px", border: "1px solid #1e293b" }}>
-                  <span style={{ color: "#64748b", fontSize: "10px", fontWeight: "700", letterSpacing: "0.5px" }}>RELATIVE STRENGTH INDICATION</span>
-                  <h3 style={{ margin: "4px 0 0 0", fontSize: "18px", color: data.meta.rsi > 65 ? "#ff4d4d" : (data.meta.rsi < 35 ? "#00e396" : "#fff") }}>{data.meta.rsi}</h3>
-                </div>
-                
-                {/* --- REAL-TIME MACRO VOLATILITY DOCK (INDIA VIX FEAR GAUGE) --- */}
-                <div style={{ background: "#0b0f19", padding: "16px", borderRadius: "10px", border: "1px solid #1e293b", position: "relative" }}>
-                  <span style={{ color: "#38bdf8", fontSize: "10px", fontWeight: "700", letterSpacing: "0.5px" }}>⚡ INDIA VIX (FEAR INDEX)</span>
-                  <h3 style={{ margin: "4px 0 0 0", fontSize: "18px", color: "#fff" }}>
-                    {data.vix_snapshot?.current} 
-                    <span style={{ fontSize: "11px", color: "#ff4d4d", marginLeft: "6px" }}>+{data.vix_snapshot?.change_pct}%</span>
-                  </h3>
-                  <span style={{ position: "absolute", right: "12px", bottom: "12px", fontSize: "8px", background: "rgba(255,77,77,0.1)", color: "#ff4d4d", padding: "2px 4px", borderRadius: "3px", fontWeight: "700" }}>
-                    {data.vix_snapshot?.status}
-                  </span>
-                </div>
-
-                {/* --- MACRO SYSTEM REGIME CLASSIFIER BLOCK --- */}
-                <div style={{ background: "#0b0f19", padding: "16px", borderRadius: "10px", border: "1px solid #1e293b" }}>
-                  <span style={{ color: "#64748b", fontSize: "10px", fontWeight: "700", letterSpacing: "0.5px" }}>MACRO SYSTEM ENVIRONMENT</span>
-                  <h3 style={{ margin: "4px 0 0 0", fontSize: "14px", fontWeight: "800", color: getRegimeColor(data.meta.market_regime) }}>
-                    {data.meta.market_regime?.replace(/_/g, " ")}
-                  </h3>
-                </div>
-              </div>
-
-              {/* --- ADVANCED INSTITUTIONAL MACRO NEWS CONTEXT OUTFLOW RADAR ALERT BANNER --- */}
-              <div style={{ background: "rgba(239, 68, 68, 0.03)", border: "1px solid rgba(239, 68, 68, 0.15)", padding: "16px", borderRadius: "10px", marginBottom: "20px" }}>
-                <h4 style={{ margin: "0 0 12px 0", fontSize: "12px", color: "#ff4d4d", fontWeight: "800", letterSpacing: "0.5px" }}>
-                  ⚠️ SYSTEMATIC PORTFOLIO RISK & INSTITUTIONAL FLOW TRACKER ALERT
-                </h4>
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                  {data.news_impact_suite?.systematic.map((news, idx) => (
-                    <div key={idx} style={{ fontSize: "12px", borderLeft: "2px solid #ff4d4d", paddingLeft: "10px" }}>
-                      <b style={{ color: "#fff" }}>{news.event}</b> — <span style={{ color: "#ff4d4d", fontSize: "10px", fontWeight: "700" }}>{news.impact_type}</span>
-                      <p style={{ margin: "2px 0 0 0", color: "#94a3b8" }}>{news.description}</p>
-                    </div>
-                  ))}
-                  
-                  {data.news_impact_suite?.idiosyncratic.map((news, idx) => (
-                    <div key={idx} style={{ fontSize: "12px", borderLeft: "2px solid #00e396", paddingLeft: "10px", background: "rgba(0,227,150,0.02)", padding: "8px", borderRadius: "0 4px 4px 0" }}>
-                      <b style={{ color: "#fff" }}>{news.event}</b> — <span style={{ color: "#00e396", fontSize: "10px", fontWeight: "700" }}>{news.impact_type}</span>
-                      <p style={{ margin: "2px 0 0 0", color: "#94a3b8" }}>{news.description}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* TRAILING PORTFOLIO QUANT BACKTEST SANDBOX PANEL */}
-              <div style={{ background: "#0b0f19", padding: "20px", borderRadius: "12px", border: "1px solid #1e293b", marginBottom: "20px" }}>
-                <h4 style={{ margin: "0 0 14px 0", fontSize: "13px", color: "#00d4ff", fontWeight: "700" }}>🔬 CORE BACKTEST SANDBOX METRICS (45-SESSION TRAILING COMPARTMENT RUN)</h4>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px" }}>
-                  <div style={{ background: "#020617", padding: "14px", borderRadius: "8px", border: "1px solid #1e293b", textAlign: "center" }}>
-                    <p style={{ margin: 0, color: "#64748b", fontSize: "11px", fontWeight: "600" }}>STRATEGY CUMULATIVE ROI</p>
-                    <h2 style={{ margin: "6px 0 0 0", color: data.backtest_sandbox_analytics?.total_roi_pct >= 0 ? "#00e396" : "#ff4d4d" }}>{data.backtest_sandbox_analytics?.total_roi_pct}%</h2>
-                  </div>
-                  <div style={{ background: "#020617", padding: "14px", borderRadius: "8px", border: "1px solid #1e293b", textAlign: "center" }}>
-                    <p style={{ margin: 0, color: "#64748b", fontSize: "11px", fontWeight: "600" }}>RISK ADJUSTED SHARPE RATIO</p>
-                    <h2 style={{ margin: "6px 0 0 0", color: "#38bdf8" }}>{data.backtest_sandbox_analytics?.sharpe_ratio_score}</h2>
-                  </div>
-                  <div style={{ background: "#020617", padding: "14px", borderRadius: "8px", border: "1px solid #1e293b", textAlign: "center" }}>
-                    <p style={{ margin: 0, color: "#64748b", fontSize: "11px", fontWeight: "600" }}>MAXIMUM PEAK-TO-TROUGH DRAWDOWN</p>
-                    <h2 style={{ margin: "6px 0 0 0", color: "#ff4d4d" }}>{data.backtest_sandbox_analytics?.max_drawdown_pct}%</h2>
-                  </div>
-                </div>
-              </div>
-
-              {/* TWO COLUMN INFERENCE BLOCK: SPEEDOMETER VS CANDLESUITE */}
-              <div style={{ display: "grid", gridTemplateColumns: "1.2fr 2fr", gap: "16px", marginBottom: "20px" }}>
-                
-                {/* RADIAL RADAR GAUGE */}
-                <div style={{ background: "#0b0f19", padding: "16px", borderRadius: "10px", border: "1px solid #1e293b", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
-                  <Chart options={options.gaugeOptions} series={[data.signals.confidence_percentage]} type="radialBar" height={180} />
-                  <div style={{ textAlign: "center", fontSize: "12px", marginTop: "-10px" }}>
-                    <span style={{ color: "#64748b" }}>Horizon Prediction Close Target: </span>
-                    <b style={{ color: "#00e396", fontSize: "14px" }}>₹{data.signals.lstm_target_price}</b>
-                  </div>
-                  <div style={{ marginTop: "12px", fontSize: "15px", fontWeight: "800", color: data.signals.recommendation === "BUY" ? "#00e396" : "#ff4d4d" }}>
-                    RECOMMENDATION: {data.signals.recommendation}
-                  </div>
-                </div>
-
-                {/* REAL-TIME HIGH RES CANDLESTICK GRAPH CHASSIS */}
-                <div style={{ background: "#0b0f19", padding: "16px", borderRadius: "10px", border: "1px solid #1e293b" }}>
-                  <Chart options={options.mainOptions} series={[{ name: "Market Candles", type: "candlestick", data: data.analytics.ohlc }]} type="candlestick" height={210} />
-                </div>
-              </div>
-
-              {/* --- CORE AI EXPLAINABILITY INSIGHT PANEL (“WHY PANEL”) --- */}
-              <div style={{ background: "#0b0f19", padding: "18px", borderRadius: "10px", border: "1px solid #1e293b", marginBottom: "24px" }}>
-                <h3 style={{ margin: "0 0 12px 0", fontSize: "13px", color: "#00d4ff", fontWeight: "700", letterSpacing: "0.5px" }}>
-                  🧠 MULTI-FACTOR ENSEMBLE EXPLAINABILITY DIAGNOSTICS (“WHY PANEL”)
-                </h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                  {data.explainability_why_panel?.map((insight, idx) => (
-                    <div key={idx} style={{ fontSize: "12px", color: "#94a3b8", display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                      <span style={{ color: "#00d4ff", fontWeight: "bold" }}>•</span>
-                      <span>{insight}</span>
-                    </div>
-                  ))}
-                  {data.explainability_why_panel?.length === 0 && (
-                    <span style={{ fontSize: "12px", color: "#64748b" }}>All statistical indicators sitting in stable equilibrium bands. Baseline confidence parameters enforced.</span>
-                  )}
-                </div>
-              </div>
-            </>
-          ) : (
-            <div style={{ background: "#0b0f19", padding: "80px", borderRadius: "10px", border: "1px solid #1e293b", textAlign: "center", marginBottom: "24px" }}>
-              <h3 style={{ color: "#64748b", margin: 0 }}>Select or run analysis mapping sequences to initialize the quantitative tracking monitors.</h3>
-            </div>
-          )}
-
-          {/* --- FIXED AUTOMATED MULTI-THREADED SCANNER SHEET GRID --- */}
-          <div style={{ background: "#0b0f19", padding: "20px", borderRadius: "10px", border: "1px solid #1e293b" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-              <h3 style={{ margin: 0, fontSize: "13px", color: "#00d4ff", fontWeight: "700", letterSpacing: "0.5px" }}>🛰️ REAL-TIME AUTOMATED MULTI-THREADED INDEX SCANNER ENGINE</h3>
-              
-              <div style={{ display: "flex", gap: "6px", background: "#020617", padding: "3px", borderRadius: "5px", border: "1px solid #1e293b" }}>
-                {["NIFTY50", "BANKNIFTY", "MIDCAP100"].map((idx) => (
-                  <button 
-                    key={idx} 
-                    onClick={() => setActiveIndex(idx)} 
-                    style={{ background: activeIndex === idx ? "#00d4ff" : "transparent", color: activeIndex === idx ? "#020617" : "#64748b", border: "none", padding: "6px 12px", borderRadius: "4px", fontWeight: "700", fontSize: "11px", cursor: "pointer" }}
-                  >
-                    {idx}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {scannerLoading ? (
-              <p style={{ color: "#00d4ff", fontSize: "13px", padding: "10px 0" }}>Deploying parallel matrix multi-threading worker nodes...</p>
-            ) : (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12.5px", textAlign: "left" }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid #1e293b", color: "#64748b" }}>
-                      <th style={{ padding: "0 10px 8px 10px" }}>TICKER ENGINE</th>
-                      <th style={{ padding: "0 10px 8px 10px" }}>VALUATION</th>
-                      <th style={{ padding: "0 10px 8px 10px" }}>RSI (14)</th>
-                      <th style={{ padding: "0 10px 8px 10px" }}>AI HORIZON SCANS</th>
-                      <th style={{ padding: "0 10px 8px 10px" }}>CONVICTION VELOCITY</th>
-                    </tr>
-                  </thead>
-                  {/* --- FIX COMPLETE: MAPPED ENTIRE DATA ARRAY MATRIX SECURELY --- */}
-                  <tbody>
-                    {scannerData.map((row, i) => (
-                      <tr 
-                        key={i} 
-                        onClick={() => { 
-                          const combinedTickerStr = `${row.symbol}.NS`;
-                          setSymbol(combinedTickerStr); 
-                          runAnalysis(combinedTickerStr); // Fixed dynamic injection bypasses state latency
-                        }} 
-                        style={{ borderBottom: "1px solid #0f172a", cursor: "pointer" }}
-                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "#0f172a"}
-                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                      >
-                        <td style={{ padding: "12px 10px", fontWeight: "700", color: "#00d4ff" }}>{row.symbol}</td>
-                        <td style={{ padding: "12px 10px" }}>₹{row.price.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
-                        <td style={{ padding: "12px 10px", color: row.rsi > 65 ? "#ff4d4d" : row.rsi < 35 ? "#00e396" : "#94a3b8" }}>{row.rsi}</td>
-                        <td style={{ padding: "12px 10px", fontWeight: "700", color: row.signal === "BUY" ? "#00e396" : "#ff4d4d" }}>{row.signal}</td>
-                        <td style={{ padding: "12px 10px", fontWeight: "700" }}>{row.confidence}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* FINANCIAL BROADCAST STREAM WIRE FEED PANEL SIDEBAR */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          <div style={{ background: "#0b0f19", padding: "16px", borderRadius: "10px", border: "1px solid #1e293b", height: "fit-content" }}>
-            <h4 style={{ margin: "0 0 4px 0", fontSize: "13px", color: "#00d4ff", fontWeight: "700" }}>📰 FINANCIAL WIRE NEWS FEED</h4>
-            <p style={{ margin: "0 0 14px 0", color: "#64748b", fontSize: "11px" }}>Real-time word mapping context evaluations</p>
-            
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {data?.live_news_feed_stream?.map((news, idx) => (
-                <div key={idx} style={{ background: "#020617", padding: "12px", borderRadius: "6px", border: "1px solid #1e293b", fontSize: "11.5px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                    <span style={{ fontSize: "9px", background: news.sentiment === "BULLISH" ? "rgba(0,227,150,0.12)" : (news.sentiment === "BEARISH" ? "rgba(255,77,77,0.12)" : "rgba(100,116,139,0.12)"), color: news.sentiment === "BULLISH" ? "#00e396" : (news.sentiment === "BEARISH" ? "#ff4d4d" : "#64748b"), padding: "1px 5px", borderRadius: "3px", fontWeight: "700" }}>
-                      {news.sentiment}
-                    </span>
-                  </div>
-                  <b style={{ color: "#fff", display: "block", marginBottom: "2px" }}>{news.headline}</b>
-                  <span style={{ color: "#64748b", fontSize: "11px" }}>{news.summary}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
+function StatCard({ label, value, accent, badge }) {
+  return (
+    <div style={{ background: "#0b0f19", padding: 16, borderRadius: 10, border: "1px solid #1e293b" }}>
+      <span style={{ color: "#64748b", fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 17, fontFamily: "JetBrains Mono", color: accent ?? "#f8fafc", fontWeight: 700 }}>{value}</span>
+        {badge && <span style={{ fontSize: 10, fontWeight: 700, color: "#f59e0b", background: "rgba(245,158,11,0.12)", padding: "2px 7px", borderRadius: 4 }}>{badge}</span>}
       </div>
     </div>
   );
 }
 
-export default App;
+function ErrorBanner({ message }) {
+  return <div style={{ background: "rgba(255,77,77,0.1)", border: "1px solid #ff4d4d", color: "#ff4d4d", padding: "12px 16px", borderRadius: 6, fontSize: 12, fontFamily: "JetBrains Mono", fontWeight: 600, marginBottom: 16 }}>⚠ {message}</div>;
+}
+
+function ScoredChip({ date }) {
+  if (!date) return null;
+  return <span style={{ fontSize: 10, fontWeight: 700, color: "#38bdf8", background: "rgba(56,189,248,0.1)", padding: "3px 9px", borderRadius: 4, fontFamily: "JetBrains Mono" }}>● AS OF {date}</span>;
+}
+
+function BandChip({ band, percentile }) {
+  return (
+    <span style={{ fontSize: 11, fontWeight: 800, fontFamily: "JetBrains Mono", color: "#0b0f19",
+      background: pctColor(percentile), padding: "4px 12px", borderRadius: 4 }}>
+      {band}{percentile != null ? ` · ${percentile}%ile` : ""}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+function Navbar() {
+  const loc = useLocation();
+  const link = (p, l) => {
+    const a = loc.pathname === p;
+    return <Link to={p} style={{ color: a ? "#00d4ff" : "#94a3b8", textDecoration: "none", fontWeight: 700, fontSize: 11, padding: "9px 18px", background: a ? "rgba(0,212,255,0.1)" : "rgba(30,41,59,0.4)", borderRadius: 6, border: `1px solid ${a ? "#00d4ff" : "#1e293b"}`, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>{l}</Link>;
+  };
+  return <div style={{ display: "flex", gap: 10, flexWrap: "wrap", background: "#0b0f19", padding: "12px 16px", borderRadius: 8, border: "1px solid #1e293b", marginBottom: 24 }}>
+    {link("/portfolio", "🧮 MY PORTFOLIO")}{link("/", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}
+  </div>;
+}
+
+// ============================================================= FACTOR PROFILE
+function ProfileView() {
+  const [symbol, setSymbol] = useState("ICICIBANK.NS");
+  const symRef = useRef("ICICIBANK.NS");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [sugg, setSugg] = useState([]);
+  const [explain, setExplain] = useState(null);
+  const [exLoading, setExLoading] = useState(false);
+  const ctrlRef = useRef(null);
+
+  useEffect(() => { symRef.current = symbol; }, [symbol]);
+  useEffect(() => { setExplain(null); }, [data?.symbol]);
+
+  const run = useCallback(async (override) => {
+    if (ctrlRef.current) ctrlRef.current.abort();
+    const ctrl = new AbortController(); ctrlRef.current = ctrl;
+    setLoading(true); setError(null);
+    try {
+      const { data: res } = await axios.get(`${API_BASE}/profile/${override ?? symRef.current}`, { signal: ctrl.signal });
+      setData(res);
+    } catch (e) { if (!axios.isCancel(e)) setError(e?.response?.data?.detail ?? "Failed to fetch. Is the backend running?"); }
+    finally { if (!ctrl.signal.aborted) { setLoading(false); ctrlRef.current = null; } }
+  }, []);
+
+  useEffect(() => { run("ICICIBANK.NS"); return () => ctrlRef.current?.abort(); }, [run]);
+
+  const getExplain = async () => {
+    if (!data?.symbol) return;
+    setExLoading(true); setExplain(null);
+    try {
+      const { data: res } = await axios.get(`${API_BASE}/explain/${data.symbol}`);
+      setExplain(res.explanation);
+    } catch (e) {
+      setExplain(e?.response?.data?.detail ?? "Explanation unavailable right now.");
+    } finally { setExLoading(false); }
+  };
+
+  const fetchSugg = useCallback(async (q) => {
+    if (q.length < 2) { setSugg([]); return; }
+    try { const { data: r } = await axios.get(`${API_BASE}/stocks/search?q=${encodeURIComponent(q.replace(/\.NS$/i, ""))}`); setSugg(r ?? []); } catch {}
+  }, []);
+  const debounced = useDebounce(fetchSugg, 300);
+
+  const gaugeOpts = useMemo(() => ({
+    chart: { type: "radialBar", background: "transparent", toolbar: { show: false } }, theme: { mode: "dark" },
+    plotOptions: { radialBar: { startAngle: -130, endAngle: 130, hollow: { size: "60%" },
+      track: { background: "#1e293b", strokeWidth: "100%" },
+      dataLabels: { name: { show: true, color: "#64748b", fontSize: "10px", offsetY: 14 },
+        value: { show: true, color: "#f8fafc", fontSize: "22px", fontWeight: 700, offsetY: -8, fontFamily: "JetBrains Mono" } } } },
+    fill: { type: "solid", colors: ["#2dd4bf"] }, labels: ["FACTOR %ILE"],
+  }), []);
+
+  const candleOpts = useMemo(() => ({
+    chart: { type: "line", toolbar: { show: false }, background: "transparent", animations: { enabled: false } },
+    theme: { mode: "dark" }, stroke: { width: [1, 2, 2], curve: "smooth" }, colors: ["#f8fafc", "#f59e0b", "#a855f7"],
+    xaxis: COMMON_X, yaxis: { labels: { style: { colors: "#64748b", fontFamily: "JetBrains Mono", fontSize: "10px" }, formatter: (v) => `₹${v?.toFixed(0)}` } },
+    grid: { borderColor: "#1e293b" }, tooltip: { theme: "dark" }, legend: { show: true, position: "top", labels: { colors: "#94a3b8" } },
+  }), []);
+
+  const pct = data?.factor_profile?.percentile ?? 0;
+  const notRanked = data && data.meta?.in_universe === false;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, background: "#0b0f19", padding: 16, borderRadius: 8, border: "1px solid #1e293b", marginBottom: 20 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 13, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono" }}>SINGLE-ASSET FACTOR PROFILE</h2>
+          <p style={{ margin: "2px 0 0", fontSize: 11, color: "#64748b" }}>Where this name sits in the universe on momentum/technical factors {data?.factor_profile?.scored_date && <ScoredChip date={data.factor_profile.scored_date} />}</p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input value={symbol} onChange={(e) => { const u = e.target.value.toUpperCase(); setSymbol(u); debounced(u); }} onKeyDown={(e) => e.key === "Enter" && run()} placeholder="Search ticker…" list="sugg"
+            style={{ padding: "9px 13px", borderRadius: 6, border: "1px solid #1e293b", background: "#020617", color: "#f8fafc", fontWeight: 600, width: 190, fontFamily: "JetBrains Mono", fontSize: 12 }} />
+          <datalist id="sugg">{sugg.map((s) => <option key={s.symbol} value={s.symbol}>{s.name}</option>)}</datalist>
+          <button onClick={() => run()} disabled={loading} style={{ background: loading ? "#1e293b" : "#00d4ff", color: loading ? "#64748b" : "#020617", border: "none", padding: "9px 20px", borderRadius: 6, fontWeight: 800, cursor: loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "JetBrains Mono" }}>{loading ? "LOADING…" : "LOAD"}</button>
+        </div>
+      </div>
+
+      {error && <ErrorBanner message={error} />}
+      {notRanked && <ErrorBanner message={`${data.symbol} is not in the ranked universe (illiquid or insufficient history).`} />}
+
+      {loading && <div style={{ padding: 80, textAlign: "center", color: "#00d4ff", background: "#0b0f19", borderRadius: 8, border: "1px solid #1e293b", fontFamily: "JetBrains Mono", fontSize: 12 }}>Loading {symbol}…</div>}
+
+      {!loading && data && (<>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 18 }}>
+          <StatCard label="SYMBOL" value={`${data.symbol}  ₹${data.meta?.current_price}`} />
+          <StatCard label="RSI (14)" value={data.meta?.rsi ?? "—"} accent={rsiColor(data.meta?.rsi)} />
+          <StatCard label="INDIA VIX" value={`${data.vix_snapshot?.current} (${data.vix_snapshot?.change_pct > 0 ? "+" : ""}${data.vix_snapshot?.change_pct}%)`} accent="#38bdf8" badge={data.vix_snapshot?.is_fallback ? "FALLBACK" : null} />
+          <StatCard label="VOLATILITY REGIME" value={data.meta?.market_regime?.replace(/_/g, " ")} accent="#f59e0b" />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 14, marginBottom: 18 }}>
+          <div style={{ background: "#0b0f19", padding: 16, borderRadius: 10, border: "1px solid #1e293b", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12 }}>
+            <Chart options={gaugeOpts} series={[pct]} type="radialBar" height={160} />
+            <BandChip band={data.factor_profile?.band} percentile={data.factor_profile?.percentile} />
+            <span style={{ fontSize: 11, fontFamily: "JetBrains Mono", color: data.meta?.factor_trend === "RISING" ? "#2dd4bf" : "#94a3b8" }}>
+              {data.meta?.factor_trend === "RISING" ? "▲ percentile rising" : "▼ percentile falling"}
+            </span>
+            <span style={{ fontSize: 11, color: "#64748b", fontFamily: "JetBrains Mono" }}>3M return: <b style={{ color: data.factors?.ret_3m_pct >= 0 ? "#00e396" : "#ff4d4d" }}>{data.factors?.ret_3m_pct ?? "—"}%</b></span>
+          </div>
+          <div style={{ background: "#0b0f19", padding: 16, borderRadius: 10, border: "1px solid #1e293b" }}>
+            {data.analytics?.ohlc?.length > 0 ? (
+              <Chart options={candleOpts} type="line" height={220} series={[
+                { name: "OHLC", type: "candlestick", data: data.analytics.ohlc.map((d) => ({ x: d.x, y: d.y })) },
+                { name: "EMA 20", type: "line", data: data.analytics.ohlc.map((d) => ({ x: d.x, y: d.ema20 })) },
+                { name: "EMA 50", type: "line", data: data.analytics.ohlc.map((d) => ({ x: d.x, y: d.ema50 })) }]} />
+            ) : <div style={{ padding: "70px 0", textAlign: "center", color: "#64748b", fontSize: 11, fontFamily: "JetBrains Mono" }}>Chart data unavailable</div>}
+          </div>
+        </div>
+
+        {data.factor_profile?.composite_score != null && (
+          <div style={{ background: "#020617", border: "1px solid #1e293b", borderRadius: 8, padding: "14px 18px", fontFamily: "JetBrains Mono", fontSize: 11, color: "#64748b", display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 18 }}>
+            {[{ k: "COMPOSITE SCORE", v: data.factor_profile.composite_score?.toFixed(3), c: "#2dd4bf" },
+              { k: "PERCENTILE", v: `${data.factor_profile.percentile}th`, c: "#f8fafc" },
+              { k: "POSITION", v: data.factor_profile.band, c: "#94a3b8" },
+              { k: "RANKED AS OF", v: data.factor_profile.scored_date ?? "—", c: "#94a3b8" }].map(({ k, v, c }) => (
+              <div key={k}><span style={{ display: "block", marginBottom: 3 }}>{k}</span><span style={{ color: c, fontWeight: 700, fontSize: 13 }}>{v}</span></div>))}
+          </div>
+        )}
+
+        {data.factor_breakdown?.length > 0 && (
+          <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 8, padding: 16, marginBottom: 18 }}>
+            <div style={{ fontSize: 11, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono", marginBottom: 12, letterSpacing: "0.05em" }}>
+              FACTOR BREAKDOWN — WHAT'S BEHIND THE RANK
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+              {data.factor_breakdown.map((f) => {
+                const tc = f.tone === "pos" ? "#00e396" : f.tone === "neg" ? "#ff4d4d" : "#94a3b8";
+                const val = f.value == null ? "—" : `${f.value > 0 && f.unit === "%" ? "+" : ""}${f.value}${f.unit}`;
+                return (
+                  <div key={f.label} style={{ background: "#020617", border: "1px solid #1e293b", borderRadius: 6, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 9, color: "#64748b", fontFamily: "JetBrains Mono", letterSpacing: "0.05em", marginBottom: 4 }}>{f.label}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "JetBrains Mono", color: tc }}>{val}</div>
+                    <div style={{ fontSize: 9, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 3 }}>{f.hint}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 10 }}>
+              Computed live from this stock's price history · descriptive readings, not predictions.
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginBottom: 18 }}>
+          <button onClick={getExplain} disabled={exLoading || !data?.factor_profile?.composite_score}
+            style={{ background: "#1e293b", color: "#2dd4bf", border: "1px solid #2dd4bf",
+              padding: "9px 18px", borderRadius: 6, fontWeight: 700,
+              cursor: exLoading ? "wait" : (!data?.factor_profile?.composite_score ? "not-allowed" : "pointer"),
+              fontSize: 11, fontFamily: "JetBrains Mono", opacity: !data?.factor_profile?.composite_score ? 0.5 : 1 }}>
+            {exLoading ? "GENERATING…" : "🤖 EXPLAIN THIS PROFILE"}
+          </button>
+          {explain && (
+            <div style={{ marginTop: 12, background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 8, padding: 16 }}>
+              <div style={{ fontSize: 10, color: "#64748b", fontFamily: "JetBrains Mono", marginBottom: 8 }}>AI-GENERATED · DESCRIPTIVE, NOT ADVICE</div>
+              <p style={{ margin: 0, color: "#cbd5e1", fontSize: 13, lineHeight: 1.6 }}>{explain}</p>
+            </div>
+          )}
+        </div>
+
+        <Disclaimer />
+      </>)}
+    </div>
+  );
+}
+
+// ============================================================ UNIVERSE SCREENER
+const TABS = ["UNIVERSE", "NIFTY50", "BANKNIFTY"];
+const BANDS = ["ALL", "TOP QUINTILE", "UPPER", "MIDDLE", "LOWER", "BOTTOM QUINTILE"];
+const TRENDS = ["ALL", "RISING", "FALLING"];
+
+function ScreenerView() {
+  const [active, setActive] = useState("UNIVERSE");
+  const [rows, setRows] = useState([]);
+  const [scoredDate, setScoredDate] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const [sectorF, setSectorF] = useState("ALL");
+  const [bandF, setBandF] = useState("ALL");
+  const [trendF, setTrendF] = useState("ALL");
+  const [rsiMin, setRsiMin] = useState("");
+  const [rsiMax, setRsiMax] = useState("");
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState("percentile");
+  const [sortDir, setSortDir] = useState("desc");
+
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      setLoading(true); setError(null);
+      try {
+        const { data } = await axios.get(`${API_BASE}/screener/${active}`);
+        if (!off) { setRows(data.results ?? []); setScoredDate(data.scored_date ?? null); }
+      } catch (e) { if (!off) { setRows([]); setError(e?.response?.data?.detail ?? "Screener fetch failed."); } }
+      finally { if (!off) setLoading(false); }
+    })();
+    return () => { off = true; };
+  }, [active]);
+
+  const sectors = useMemo(() => {
+    const s = Array.from(new Set(rows.map((r) => r.sector).filter((x) => x && x !== "UNKNOWN"))).sort();
+    return ["ALL", ...s];
+  }, [rows]);
+  const hasSectors = sectors.length > 1;
+
+  const view = useMemo(() => {
+    const mn = rsiMin === "" ? -Infinity : parseFloat(rsiMin);
+    const mx = rsiMax === "" ? Infinity : parseFloat(rsiMax);
+    const q = search.trim().toUpperCase();
+    let out = rows.filter((r) =>
+      (sectorF === "ALL" || r.sector === sectorF) &&
+      (bandF === "ALL" || r.band === bandF) &&
+      (trendF === "ALL" || r.factor_trend === trendF) &&
+      (r.rsi >= mn && r.rsi <= mx) &&
+      (q === "" || r.symbol.includes(q))
+    );
+    const dir = sortDir === "asc" ? 1 : -1;
+    out = [...out].sort((a, b) => {
+      const va = a[sortKey], vb = b[sortKey];
+      if (typeof va === "string") return va.localeCompare(vb) * dir;
+      return (va - vb) * dir;
+    });
+    return out;
+  }, [rows, sectorF, bandF, trendF, rsiMin, rsiMax, search, sortKey, sortDir]);
+
+  const setSort = (key, numeric) => {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir(numeric ? "desc" : "asc"); }
+  };
+  const clearFilters = () => { setSectorF("ALL"); setBandF("ALL"); setTrendF("ALL"); setRsiMin(""); setRsiMax(""); setSearch(""); };
+
+  const COLS = [
+    { key: "symbol", label: "TICKER", numeric: false },
+    { key: "price", label: "PRICE", numeric: true },
+    { key: "rsi", label: "RSI", numeric: true },
+    { key: "percentile", label: "FACTOR %ILE", numeric: true },
+    { key: "band", label: "POSITION", numeric: false, noSort: true },
+    { key: "relative_strength", label: "3M α vs NIFTY", numeric: true },
+    { key: "factor_trend", label: "TREND", numeric: false, noSort: true },
+  ];
+
+  const inp = { padding: "7px 10px", borderRadius: 5, border: "1px solid #1e293b", background: "#020617", color: "#f8fafc", fontFamily: "JetBrains Mono", fontSize: 11 };
+  const lab = { fontSize: 9, color: "#64748b", fontFamily: "JetBrains Mono", display: "block", marginBottom: 4, letterSpacing: "0.05em" };
+
+  return (
+    <div style={{ background: "#0b0f19", padding: 20, borderRadius: 10, border: "1px solid #1e293b" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 13, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono", display: "flex", alignItems: "center", gap: 10 }}>🛰 UNIVERSE FACTOR SCREENER — {active} <ScoredChip date={scoredDate} /></h3>
+          <p style={{ margin: "2px 0 0", fontSize: 11, color: "#64748b" }}>Filter and sort the universe by factor percentile, RSI, position, and trend · descriptive only.</p>
+        </div>
+        <div style={{ display: "flex", gap: 4, background: "#020617", padding: 3, borderRadius: 5, border: "1px solid #1e293b" }}>
+          {TABS.map((i) => <button key={i} onClick={() => setActive(i)} style={{ background: active === i ? "#00d4ff" : "transparent", color: active === i ? "#020617" : "#94a3b8", border: "none", padding: "6px 14px", borderRadius: 4, fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "JetBrains Mono" }}>{i}</button>)}
+        </div>
+      </div>
+
+      {error && <ErrorBanner message={error} />}
+      <Disclaimer />
+
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", background: "#020617", padding: 14, borderRadius: 6, border: "1px solid #1e293b", marginBottom: 16 }}>
+        {hasSectors && (
+          <div>
+            <label style={lab}>SECTOR</label>
+            <select value={sectorF} onChange={(e) => setSectorF(e.target.value)} style={{ ...inp, minWidth: 130 }}>
+              {sectors.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        )}
+        <div>
+          <label style={lab}>POSITION</label>
+          <select value={bandF} onChange={(e) => setBandF(e.target.value)} style={{ ...inp, minWidth: 140 }}>
+            {BANDS.map((b) => <option key={b} value={b}>{b}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={lab}>TREND</label>
+          <select value={trendF} onChange={(e) => setTrendF(e.target.value)} style={inp}>
+            {TRENDS.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={lab}>RSI MIN</label>
+          <input value={rsiMin} onChange={(e) => setRsiMin(e.target.value)} placeholder="0" inputMode="numeric" style={{ ...inp, width: 64 }} />
+        </div>
+        <div>
+          <label style={lab}>RSI MAX</label>
+          <input value={rsiMax} onChange={(e) => setRsiMax(e.target.value)} placeholder="100" inputMode="numeric" style={{ ...inp, width: 64 }} />
+        </div>
+        <div>
+          <label style={lab}>TICKER</label>
+          <input value={search} onChange={(e) => setSearch(e.target.value.toUpperCase())} placeholder="search…" style={{ ...inp, width: 110 }} />
+        </div>
+        <button onClick={clearFilters} style={{ ...inp, color: "#94a3b8", cursor: "pointer", fontWeight: 700 }}>CLEAR</button>
+        <div style={{ marginLeft: "auto", fontSize: 11, color: "#2dd4bf", fontFamily: "JetBrains Mono", fontWeight: 700 }}>
+          {view.length} of {rows.length} names
+        </div>
+      </div>
+
+      {loading && !rows.length ? <p style={{ color: "#00d4ff", fontSize: 11, padding: "20px 0", fontFamily: "JetBrains Mono" }}>Loading ranked universe…</p> : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "JetBrains Mono" }}>
+            <thead><tr style={{ borderBottom: "1px solid #1e293b" }}>
+              {COLS.map((c) => (
+                <th key={c.key} onClick={() => !c.noSort && setSort(c.key, c.numeric)}
+                  style={{ padding: "0 10px 8px", textAlign: "left", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em",
+                    cursor: c.noSort ? "default" : "pointer", userSelect: "none", whiteSpace: "nowrap",
+                    color: sortKey === c.key ? "#00d4ff" : "#64748b" }}>
+                  {c.label}{!c.noSort && sortKey === c.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                </th>))}
+            </tr></thead>
+            <tbody>
+              {view.map((r) => (
+                <tr key={r.symbol} style={{ borderBottom: "1px solid #0f172a" }}>
+                  <td style={{ padding: "11px 10px", fontWeight: 700, color: "#00d4ff" }}>{r.symbol}</td>
+                  <td style={{ padding: "11px 10px" }}>₹{r.price}</td>
+                  <td style={{ padding: "11px 10px", color: rsiColor(r.rsi) }}>{r.rsi}</td>
+                  <td style={{ padding: "11px 10px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ height: 4, width: `${Math.max(r.percentile, 4) * 0.8}px`, maxWidth: 80, background: pctColor(r.percentile), borderRadius: 2 }} />
+                      <span>{r.percentile}</span>
+                    </div>
+                  </td>
+                  <td style={{ padding: "11px 10px", color: pctColor(r.percentile), fontWeight: 700 }}>{r.band}</td>
+                  <td style={{ padding: "11px 10px", fontWeight: 700, color: r.relative_strength >= 0 ? "#00e396" : "#ff4d4d" }}>{r.relative_strength >= 0 ? "+" : ""}{r.relative_strength}%</td>
+                  <td style={{ padding: "11px 10px", color: r.factor_trend === "RISING" ? "#2dd4bf" : "#94a3b8", fontWeight: 700 }}>{r.factor_trend === "RISING" ? "▲" : "▼"} {r.factor_trend}</td>
+                </tr>))}
+              {!view.length && !loading && (
+                <tr><td colSpan={COLS.length} style={{ padding: "24px 10px", textAlign: "center", color: "#64748b", fontFamily: "JetBrains Mono", fontSize: 11 }}>No names match these filters.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================ WEEKLY BREAKOUTS
+const num = (v, suffix = "", plus = false) => (v == null ? "—" : `${plus && v >= 0 ? "+" : ""}${v}${suffix}`);
+
+function WeeklyBreakoutsView() {
+  const [data, setData] = useState(null);
+  const [week, setWeek] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [sortKey, setSortKey] = useState("score");
+  const [sortDir, setSortDir] = useState("desc");
+  const [addKey, setAddKey] = useState(null);
+  const [addQty, setAddQty] = useState("");
+  const [addMsg, setAddMsg] = useState(null);
+
+  const load = useCallback(async (w) => {
+    setLoading(true); setError(null);
+    try {
+      const { data: res } = await axios.get(`${API_BASE}/weekly-breakouts${w ? `?week=${w}` : ""}`);
+      setData(res); setWeek(res.week_ending); setAddKey(null);
+    } catch (e) { setError(e?.response?.data?.detail ?? "Failed to load weekly breakouts."); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const setSort = (key, numeric) => {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir(numeric ? "desc" : "asc"); }
+  };
+
+  const view = useMemo(() => {
+    const rows = data?.breakouts ?? [];
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const va = a[sortKey], vb = b[sortKey];
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === "string") return va.localeCompare(vb) * dir;
+      return (va - vb) * dir;
+    });
+  }, [data, sortKey, sortDir]);
+
+  const highlight = useMemo(() => {
+    const t = (data?.breakouts ?? []).filter((b) => b.since_pct != null);
+    if (!t.length) return null;
+    return {
+      best: t.reduce((a, b) => (b.since_pct > a.since_pct ? b : a)),
+      worst: t.reduce((a, b) => (b.since_pct < a.since_pct ? b : a)),
+    };
+  }, [data]);
+
+  const startAdd = (b) => { setAddKey(b.symbol); setAddQty(""); setAddMsg(null); };
+  const cancelAdd = () => { setAddKey(null); };
+  const confirmAdd = async (b) => {
+    const qty = parseFloat(addQty);
+    if (!(qty > 0)) { setAddMsg({ err: true, text: "Enter a positive quantity." }); return; }
+    try {
+      await axios.post(`${API_BASE}/portfolio/positions`, { symbol: b.symbol, exchange: "NSE", qty, avg_price: b.current_price });
+      setAddKey(null);
+      setAddMsg({ err: false, text: `Added ${b.symbol} × ${qty} to portfolio at ₹${b.current_price} (live price). Adjust the buy price on the Portfolio tab if you bought elsewhere.` });
+    } catch (e) {
+      setAddMsg({ err: true, text: e?.response?.data?.detail ?? "Could not add to portfolio." });
+    }
+  };
+
+  const COLS = [
+    { key: "symbol", label: "SYMBOL", numeric: false },
+    { key: "score", label: "SCORE", numeric: true },
+    { key: "breakout_close", label: "BREAKOUT ₹", numeric: true },
+    { key: "current_price", label: "NOW ₹", numeric: true },
+    { key: "since_pct", label: "SINCE %", numeric: true },
+    { key: "week_return_pct", label: "WK RET %", numeric: true },
+    { key: "vol_surge", label: "VOL ×", numeric: true },
+    { key: "ret_4w", label: "4W %", numeric: true },
+    { key: "ret_12w", label: "12W %", numeric: true },
+    { key: "rs_4w", label: "RS 4W %", numeric: true },
+    { key: "from_52w_high", label: "52W HIGH %", numeric: true },
+    { key: "gates", label: "GATES", numeric: false },
+  ];
+  const rightCols = new Set(COLS.filter((c) => c.numeric).map((c) => c.key));
+  const s = data?.summary;
+
+  return (
+    <div style={{ background: "#0b0f19", padding: 20, borderRadius: 10, border: "1px solid #1e293b" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div>
+          <h4 style={{ margin: "0 0 4px", fontSize: 13, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono", display: "flex", alignItems: "center", gap: 10 }}>🚀 WEEKLY MOMENTUM BREAKOUTS {week && <ScoredChip date={week} />}</h4>
+          <p style={{ margin: 0, color: "#64748b", fontSize: 11 }}>Stocks that broke out this week, tracked live since the breakout close · descriptive screen, not advice.</p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {data?.available_weeks?.length > 0 && (
+            <select value={week ?? ""} onChange={(e) => load(e.target.value)} style={{ padding: "8px 11px", borderRadius: 6, border: "1px solid #1e293b", background: "#020617", color: "#f8fafc", fontFamily: "JetBrains Mono", fontSize: 12 }}>
+              {data.available_weeks.map((w) => <option key={w} value={w}>Week ending {w}</option>)}
+            </select>
+          )}
+          <button onClick={() => load(week)} disabled={loading} style={{ background: loading ? "#1e293b" : "#00d4ff", color: loading ? "#64748b" : "#020617", border: "none", padding: "9px 16px", borderRadius: 6, fontWeight: 800, cursor: loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "JetBrains Mono" }}>{loading ? "…" : "↻"}</button>
+        </div>
+      </div>
+
+      {error && <ErrorBanner message={error} />}
+
+      {s && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14, fontSize: 11, fontFamily: "JetBrains Mono" }}>
+          <span style={{ background: "rgba(0,212,255,0.1)", color: "#00d4ff", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>{s.n} BREAKOUTS</span>
+          <span style={{ background: "rgba(148,163,184,0.1)", color: s.avg_since_pct >= 0 ? "#00e396" : "#ff4d4d", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>AVG SINCE {num(s.avg_since_pct, "%", true)}</span>
+          <span style={{ background: "rgba(0,227,150,0.1)", color: "#00e396", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>▲ {s.winners} UP</span>
+          <span style={{ background: "rgba(255,77,77,0.1)", color: "#ff4d4d", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>▼ {s.losers} DOWN</span>
+        </div>
+      )}
+
+      {highlight && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+          {[{ lab: "BEST SINCE BREAKOUT", b: highlight.best, c: "#00e396" }, { lab: "WORST SINCE BREAKOUT", b: highlight.worst, c: "#ff4d4d" }].map(({ lab, b, c }) => (
+            <div key={lab} style={{ background: "#020617", border: `1px solid ${c}44`, borderRadius: 8, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 9, color: "#64748b", fontFamily: "JetBrains Mono", letterSpacing: "0.05em", marginBottom: 4 }}>{lab}</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: "#00d4ff", fontFamily: "JetBrains Mono" }}>{b.symbol}</div>
+                <div style={{ fontSize: 10, color: "#64748b", fontFamily: "JetBrains Mono", marginTop: 2 }}>₹{b.breakout_close} → ₹{b.current_price}</div>
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: c, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>{b.since_pct >= 0 ? "+" : ""}{b.since_pct}%</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {addMsg && <div style={{ fontSize: 11, fontFamily: "JetBrains Mono", fontWeight: 700, color: addMsg.err ? "#ff4d4d" : "#00e396", marginBottom: 12, lineHeight: 1.5 }}>{addMsg.text}</div>}
+
+      <Disclaimer />
+
+      {loading && !data ? <p style={{ color: "#00d4ff", fontSize: 11, fontFamily: "JetBrains Mono", padding: "16px 0" }}>Loading breakouts & live prices…</p> : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>
+            <thead><tr style={{ borderBottom: "1px solid #1e293b" }}>
+              {COLS.map((c) => (
+                <th key={c.key} onClick={() => setSort(c.key, c.numeric)}
+                  style={{ padding: "0 10px 8px", textAlign: rightCols.has(c.key) ? "right" : "left", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em", cursor: "pointer", userSelect: "none", color: sortKey === c.key ? "#00d4ff" : "#64748b" }}>
+                  {c.label}{sortKey === c.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                </th>))}
+              <th style={{ padding: "0 10px 8px", textAlign: "center", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em", color: "#64748b" }}>1M TREND</th>
+              <th style={{ padding: "0 10px 8px", textAlign: "center", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em", color: "#64748b" }}>ADD TO PF</th>
+            </tr></thead>
+            <tbody>
+              {view.map((b) => (
+                <tr key={b.symbol} style={{ borderBottom: "1px solid #0f172a" }}>
+                  <td style={{ padding: "10px", fontWeight: 700, color: "#00d4ff" }}>{b.symbol}</td>
+                  <td style={{ padding: "10px", textAlign: "right", fontWeight: 700 }}>{num(b.score)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }}>{num(b.breakout_close)}</td>
+                  <td style={{ padding: "10px", textAlign: "right" }}>{b.stale ? <span style={{ color: "#f59e0b" }} title="live price unavailable">n/a</span> : num(b.current_price)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: b.since_pct == null ? "#475569" : pnlColor(b.since_pct) }}>{num(b.since_pct, "%", true)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: pnlColor(b.week_return_pct) }}>{num(b.week_return_pct, "%", true)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: "#f59e0b" }}>{num(b.vol_surge, "×")}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: pnlColor(b.ret_4w) }}>{num(b.ret_4w, "%", true)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: pnlColor(b.ret_12w) }}>{num(b.ret_12w, "%", true)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: pnlColor(b.rs_4w) }}>{num(b.rs_4w, "%", true)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }}>{num(b.from_52w_high, "%")}</td>
+                  <td style={{ padding: "10px", color: b.gates?.startsWith(b.gates?.split("/")[1]) ? "#00e396" : "#94a3b8" }}>{b.gates}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "center" }}><span style={{ display: "inline-block", verticalAlign: "middle" }}><Spark data={b.spark} /></span></td>
+                  <td style={{ padding: "8px 10px", textAlign: "center", whiteSpace: "nowrap" }}>
+                    {b.stale || b.current_price == null ? (
+                      <span style={{ color: "#475569" }}>—</span>
+                    ) : addKey === b.symbol ? (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <input value={addQty} onChange={(e) => setAddQty(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") confirmAdd(b); if (e.key === "Escape") cancelAdd(); }} inputMode="decimal" placeholder="qty" autoFocus style={{ width: 50, padding: "4px 6px", borderRadius: 4, border: "1px solid #1e293b", background: "#020617", color: "#f8fafc", fontFamily: "JetBrains Mono", fontSize: 11, textAlign: "right" }} />
+                        <button onClick={() => confirmAdd(b)} title={`Add at ₹${b.current_price}`} style={{ background: "transparent", border: "none", color: "#00e396", cursor: "pointer", fontSize: 14, fontFamily: "JetBrains Mono" }}>✓</button>
+                        <button onClick={cancelAdd} title="Cancel" style={{ background: "transparent", border: "none", color: "#ff4d4d", cursor: "pointer", fontSize: 12, fontFamily: "JetBrains Mono" }}>✕</button>
+                      </span>
+                    ) : (
+                      <button onClick={() => startAdd(b)} title={`Add ${b.symbol} to portfolio at ₹${b.current_price}`} style={{ background: "transparent", border: "1px solid #1e293b", color: "#00d4ff", cursor: "pointer", fontSize: 10, fontFamily: "JetBrains Mono", padding: "4px 9px", borderRadius: 4, fontWeight: 700 }}>+ PF</button>
+                    )}
+                  </td>
+                </tr>))}
+              {!view.length && !loading && (
+                <tr><td colSpan={COLS.length + 2} style={{ padding: "24px 10px", textAlign: "center", color: "#64748b", fontSize: 11 }}>No breakouts in this week's file.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12 }}>
+        SINCE % = live price vs. the breakout-week close ({week}) · SCORE, VOL ×, returns and gates from the weekly momentum screen · NSE names · descriptive, not advice.
+      </div>
+    </div>
+  );
+}
+
+// ============================================================== MY PORTFOLIO
+const fmtINR = (v) => "₹" + Math.round(v).toLocaleString("en-IN");
+const fmtUSD = (v) => "$" + Math.round(v).toLocaleString("en-US");
+const signed = (fn) => (v) => (v >= 0 ? "+" : "−") + fn(Math.abs(v)).replace(/^[+−-]/, "");
+const nativePx = (v, ccy) => (ccy === "USD" ? "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "₹" + v.toLocaleString("en-IN", { maximumFractionDigits: 2 }));
+const pnlColor = (v) => (v >= 0 ? "#00e396" : "#ff4d4d");
+
+function Spark({ data }) {
+  if (!data || data.length < 2) return <span style={{ color: "#475569", fontSize: 10 }}>—</span>;
+  const w = 82, h = 22, pad = 2;
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = max - min || 1;
+  const x = (i) => pad + (i / (data.length - 1)) * (w - 2 * pad);
+  const y = (v) => pad + (1 - (v - min) / range) * (h - 2 * pad);
+  const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const up = data[data.length - 1] >= data[0];
+  const color = up ? "#00e396" : "#ff4d4d";
+  return (
+    <svg width={w} height={h} style={{ display: "block" }} aria-hidden="true">
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={x(data.length - 1)} cy={y(data[data.length - 1])} r="1.8" fill={color} />
+    </svg>
+  );
+}
+
+function PortfolioView() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [disp, setDisp] = useState("INR");
+  const [sortKey, setSortKey] = useState("value_inr");
+  const [sortDir, setSortDir] = useState("desc");
+  const [form, setForm] = useState({ symbol: "", exchange: "NSE", qty: "", avg_price: "" });
+  const [saving, setSaving] = useState(false);
+  const [formMsg, setFormMsg] = useState(null);
+  const [editKey, setEditKey] = useState(null);
+  const [editVals, setEditVals] = useState({ qty: "", avg_price: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const { data: res } = await axios.get(`${API_BASE}/portfolio`);
+      setData(res);
+    } catch (e) { setError(e?.response?.data?.detail ?? "Failed to load portfolio. Is the backend running and holdings.json present?"); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const rate = data?.fx?.rate ?? 1;
+  const base = useCallback((inr) => (disp === "INR" ? fmtINR(inr) : fmtUSD(inr / rate)), [disp, rate]);
+  const baseSigned = useCallback((inr) => (inr >= 0 ? "+" : "−") + base(Math.abs(inr)), [base]);
+
+  const view = useMemo(() => {
+    if (!data?.holdings) return [];
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...data.holdings].sort((a, b) => {
+      const va = a[sortKey], vb = b[sortKey];
+      if (typeof va === "string") return va.localeCompare(vb) * dir;
+      return (va - vb) * dir;
+    });
+  }, [data, sortKey, sortDir]);
+
+  const setSort = (key, numeric) => {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir(numeric ? "desc" : "asc"); }
+  };
+
+  const movers = useMemo(() => {
+    const hs = (data?.holdings ?? []).filter((h) => !h.stale && typeof h.day_change_pct === "number");
+    const gainers = hs.filter((h) => h.day_change_pct > 0).sort((a, b) => b.day_change_pct - a.day_change_pct).slice(0, 5);
+    const losers = hs.filter((h) => h.day_change_pct < 0).sort((a, b) => a.day_change_pct - b.day_change_pct).slice(0, 5);
+    return { gainers, losers };
+  }, [data]);
+
+  const addPosition = async (e) => {
+    e?.preventDefault();
+    const symbol = form.symbol.trim().toUpperCase();
+    const qty = parseFloat(form.qty), avg_price = parseFloat(form.avg_price);
+    if (!symbol || !(qty > 0) || !(avg_price > 0)) {
+      setFormMsg({ err: true, text: "Enter a symbol and a positive quantity and buy price." });
+      return;
+    }
+    setSaving(true); setFormMsg(null);
+    try {
+      await axios.post(`${API_BASE}/portfolio/positions`, { symbol, exchange: form.exchange, qty, avg_price });
+      setForm((f) => ({ symbol: "", exchange: f.exchange, qty: "", avg_price: "" }));
+      setFormMsg({ err: false, text: `${symbol} saved.` });
+      await load();
+    } catch (err) {
+      setFormMsg({ err: true, text: err?.response?.data?.detail ?? "Could not add position." });
+    } finally { setSaving(false); }
+  };
+
+  const removePosition = async (h) => {
+    if (!window.confirm(`Remove ${h.symbol} (${h.exchange}) from your portfolio?`)) return;
+    try {
+      await axios.delete(`${API_BASE}/portfolio/positions/${encodeURIComponent(h.symbol)}?exchange=${h.exchange}`);
+      await load();
+    } catch (err) { setError(err?.response?.data?.detail ?? "Could not remove position."); }
+  };
+
+  const startEdit = (h) => { setEditKey(`${h.symbol}|${h.exchange}`); setEditVals({ qty: String(h.qty), avg_price: String(h.avg_price) }); };
+  const cancelEdit = () => { setEditKey(null); };
+  const saveEdit = async (h) => {
+    const qty = parseFloat(editVals.qty), avg_price = parseFloat(editVals.avg_price);
+    if (!(qty > 0) || !(avg_price > 0)) { setError("Quantity and buy price must be positive."); return; }
+    try {
+      await axios.put(`${API_BASE}/portfolio/positions/${encodeURIComponent(h.symbol)}`, { qty, avg_price, exchange: h.exchange });
+      setEditKey(null); setError(null);
+      await load();
+    } catch (err) { setError(err?.response?.data?.detail ?? "Could not update position."); }
+  };
+
+  const finp = { padding: "8px 11px", borderRadius: 5, border: "1px solid #1e293b", background: "#020617", color: "#f8fafc", fontFamily: "JetBrains Mono", fontSize: 12 };
+  const flab = { fontSize: 9, color: "#64748b", fontFamily: "JetBrains Mono", display: "block", marginBottom: 4, letterSpacing: "0.05em" };
+
+  const s = data?.summary;
+  const hasHoldings = data?.holdings?.length > 0;
+  const COLS = [
+    { key: "symbol", label: "SYMBOL", numeric: false },
+    { key: "exchange", label: "MKT", numeric: false },
+    { key: "qty", label: "QTY", numeric: true },
+    { key: "avg_price", label: "AVG BUY", numeric: true },
+    { key: "last_price", label: "LTP", numeric: true },
+    { key: "invested_inr", label: "INVESTED", numeric: true },
+    { key: "value_inr", label: "VALUE", numeric: true },
+    { key: "pnl_inr", label: "P&L", numeric: true },
+    { key: "pnl_pct", label: "P&L %", numeric: true },
+    { key: "day_change_pct", label: "DAY %", numeric: true },
+  ];
+  const rightCols = new Set(["qty", "avg_price", "last_price", "invested_inr", "value_inr", "pnl_inr", "pnl_pct", "day_change_pct"]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, background: "#0b0f19", padding: 16, borderRadius: 8, border: "1px solid #1e293b", marginBottom: 20 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 13, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono" }}>MY PORTFOLIO — NSE + US</h2>
+          <p style={{ margin: "2px 0 0", fontSize: 11, color: "#64748b" }}>
+            Live cost-basis vs. market price across both markets, rolled into ₹{data?.fx ? ` · USDINR ${rate}${data.fx.is_fallback ? " (fallback)" : ""}` : ""}
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 4, background: "#020617", padding: 3, borderRadius: 6, border: "1px solid #1e293b" }}>
+            {["INR", "USD"].map((c) => (
+              <button key={c} onClick={() => setDisp(c)} style={{ background: disp === c ? "#00d4ff" : "transparent", color: disp === c ? "#020617" : "#94a3b8", border: "none", padding: "6px 14px", borderRadius: 4, fontWeight: 800, fontSize: 11, cursor: "pointer", fontFamily: "JetBrains Mono" }}>{c === "INR" ? "₹ INR" : "$ USD"}</button>
+            ))}
+          </div>
+          <button onClick={load} disabled={loading} style={{ background: loading ? "#1e293b" : "#00d4ff", color: loading ? "#64748b" : "#020617", border: "none", padding: "9px 18px", borderRadius: 6, fontWeight: 800, cursor: loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "JetBrains Mono" }}>{loading ? "…" : "↻ REFRESH"}</button>
+        </div>
+      </div>
+
+      {error && <ErrorBanner message={error} />}
+      {data?.stale_symbols?.length > 0 && <ErrorBanner message={`Live price unavailable for: ${data.stale_symbols.join(", ")} — showing cost basis for these.`} />}
+
+      {loading && !data && <div style={{ padding: 80, textAlign: "center", color: "#00d4ff", background: "#0b0f19", borderRadius: 8, border: "1px solid #1e293b", fontFamily: "JetBrains Mono", fontSize: 12 }}>Fetching live prices…</div>}
+
+      {data && (
+        <form onSubmit={addPosition} style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", background: "#0b0f19", padding: 14, borderRadius: 10, border: "1px solid #1e293b", marginBottom: 16 }}>
+          <div style={{ fontSize: 11, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono", alignSelf: "center", marginRight: 4 }}>+ ADD POSITION</div>
+          <div>
+            <label style={flab}>SYMBOL</label>
+            <input value={form.symbol} onChange={(e) => setForm((f) => ({ ...f, symbol: e.target.value.toUpperCase() }))} placeholder={form.exchange === "US" ? "AAPL" : "RELIANCE"} style={{ ...finp, width: 130 }} />
+          </div>
+          <div>
+            <label style={flab}>EXCHANGE</label>
+            <select value={form.exchange} onChange={(e) => setForm((f) => ({ ...f, exchange: e.target.value }))} style={finp}>
+              <option value="NSE">NSE</option>
+              <option value="US">US</option>
+            </select>
+          </div>
+          <div>
+            <label style={flab}>QUANTITY</label>
+            <input value={form.qty} onChange={(e) => setForm((f) => ({ ...f, qty: e.target.value }))} inputMode="decimal" placeholder="0" style={{ ...finp, width: 90 }} />
+          </div>
+          <div>
+            <label style={flab}>AVG BUY PRICE ({form.exchange === "US" ? "$" : "₹"})</label>
+            <input value={form.avg_price} onChange={(e) => setForm((f) => ({ ...f, avg_price: e.target.value }))} inputMode="decimal" placeholder="0.00" style={{ ...finp, width: 120 }} />
+          </div>
+          <button type="submit" disabled={saving} style={{ background: saving ? "#1e293b" : "#00e396", color: saving ? "#64748b" : "#020617", border: "none", padding: "9px 20px", borderRadius: 6, fontWeight: 800, cursor: saving ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "JetBrains Mono" }}>{saving ? "SAVING…" : "ADD"}</button>
+          {formMsg && <span style={{ fontSize: 11, fontFamily: "JetBrains Mono", color: formMsg.err ? "#ff4d4d" : "#00e396", fontWeight: 700 }}>{formMsg.text}</span>}
+        </form>
+      )}
+
+      {hasHoldings && s && (<>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 16 }}>
+          <StatCard label="TOTAL INVESTED" value={base(s.invested_inr)} />
+          <StatCard label="CURRENT VALUE" value={base(s.value_inr)} />
+          <StatCard label="TOTAL P&L" value={`${baseSigned(s.pnl_inr)}  ${s.pnl_pct >= 0 ? "▲" : "▼"}${Math.abs(s.pnl_pct)}%`} accent={pnlColor(s.pnl_inr)} />
+          <StatCard label="DAY'S CHANGE" value={`${baseSigned(s.day_change_inr)}  ${s.day_change_pct >= 0 ? "▲" : "▼"}${Math.abs(s.day_change_pct)}%`} accent={pnlColor(s.day_change_inr)} />
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16, fontSize: 11, fontFamily: "JetBrains Mono" }}>
+          <span style={{ background: "rgba(0,212,255,0.1)", color: "#00d4ff", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>NSE {data.allocation?.NSE ?? 0}%</span>
+          <span style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>US {data.allocation?.US ?? 0}%</span>
+          <div style={{ flex: 1, minWidth: 120, height: 6, background: "#f59e0b", borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ width: `${data.allocation?.NSE ?? 0}%`, height: "100%", background: "#00d4ff" }} />
+          </div>
+          {s.best && <span style={{ color: "#64748b" }}>BEST <b style={{ color: "#00e396" }}>{s.best.symbol} +{s.best.pnl_pct}%</b></span>}
+          {s.worst && <span style={{ color: "#64748b" }}>WORST <b style={{ color: pnlColor(s.worst.pnl_pct) }}>{s.worst.symbol} {s.worst.pnl_pct >= 0 ? "+" : ""}{s.worst.pnl_pct}%</b></span>}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+          {[
+            { key: "g", title: "▲ TODAY'S GAINERS", rows: movers.gainers, color: "#00e396" },
+            { key: "l", title: "▼ TODAY'S LOSERS", rows: movers.losers, color: "#ff4d4d" },
+          ].map((col) => (
+            <div key={col.key} style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: col.color, fontFamily: "JetBrains Mono", letterSpacing: "0.05em", marginBottom: 8 }}>{col.title}</div>
+              {col.rows.length === 0 ? (
+                <div style={{ fontSize: 11, color: "#475569", fontFamily: "JetBrains Mono", padding: "6px 0" }}>None today.</div>
+              ) : col.rows.map((h) => (
+                <div key={h.symbol + h.exchange} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #0f172a" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <span style={{ color: "#00d4ff", fontWeight: 700, fontFamily: "JetBrains Mono", fontSize: 12 }}>{h.symbol}</span>
+                    <span style={{ background: h.exchange === "US" ? "rgba(245,158,11,0.12)" : "rgba(0,212,255,0.1)", color: h.exchange === "US" ? "#f59e0b" : "#00d4ff", padding: "1px 6px", borderRadius: 3, fontSize: 8, fontWeight: 700, fontFamily: "JetBrains Mono" }}>{h.exchange}</span>
+                  </span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: "JetBrains Mono", fontSize: 12 }}>
+                    <span style={{ color: col.color, fontWeight: 700 }}>{h.day_change_pct >= 0 ? "+" : ""}{h.day_change_pct}%</span>
+                    <span style={{ color: "#64748b", fontSize: 11, minWidth: 80, textAlign: "right" }}>{baseSigned(h.day_change_inr)}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>
+            <thead><tr style={{ borderBottom: "1px solid #1e293b" }}>
+              {COLS.map((c) => (
+                <th key={c.key} onClick={() => setSort(c.key, c.numeric)}
+                  style={{ padding: "0 10px 8px", textAlign: rightCols.has(c.key) ? "right" : "left", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em", cursor: "pointer", userSelect: "none", color: sortKey === c.key ? "#00d4ff" : "#64748b" }}>
+                  {c.label}{sortKey === c.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                </th>))}
+              <th style={{ padding: "0 10px 8px", textAlign: "center", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em", color: "#64748b" }}>1M TREND</th>
+              <th style={{ padding: "0 10px 8px" }}></th>
+            </tr></thead>
+            <tbody>
+              {view.map((h) => {
+                const editing = editKey === `${h.symbol}|${h.exchange}`;
+                const cellEdit = { ...finp, width: 74, textAlign: "right", padding: "5px 8px", fontSize: 11 };
+                const iconBtn = { background: "transparent", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "JetBrains Mono" };
+                return (
+                <tr key={h.symbol + h.exchange} style={{ borderBottom: "1px solid #0f172a", background: editing ? "rgba(0,212,255,0.04)" : "transparent" }}>
+                  <td style={{ padding: "11px 10px", fontWeight: 700, color: "#00d4ff" }}>{h.symbol}</td>
+                  <td style={{ padding: "11px 10px" }}>
+                    <span style={{ background: h.exchange === "US" ? "rgba(245,158,11,0.12)" : "rgba(0,212,255,0.1)", color: h.exchange === "US" ? "#f59e0b" : "#00d4ff", padding: "2px 7px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{h.exchange}</span>
+                  </td>
+                  <td style={{ padding: "11px 10px", textAlign: "right" }}>
+                    {editing
+                      ? <input value={editVals.qty} onChange={(e) => setEditVals((v) => ({ ...v, qty: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(h); if (e.key === "Escape") cancelEdit(); }} inputMode="decimal" autoFocus style={cellEdit} />
+                      : h.qty}
+                  </td>
+                  <td style={{ padding: "11px 10px", textAlign: "right", color: editing ? "#f8fafc" : "#94a3b8" }}>
+                    {editing
+                      ? <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 3 }}>
+                          <span style={{ color: "#64748b" }}>{h.currency === "USD" ? "$" : "₹"}</span>
+                          <input value={editVals.avg_price} onChange={(e) => setEditVals((v) => ({ ...v, avg_price: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(h); if (e.key === "Escape") cancelEdit(); }} inputMode="decimal" style={cellEdit} />
+                        </span>
+                      : nativePx(h.avg_price, h.currency)}
+                  </td>
+                  <td style={{ padding: "11px 10px", textAlign: "right" }}>{nativePx(h.last_price, h.currency)}</td>
+                  <td style={{ padding: "11px 10px", textAlign: "right", color: "#94a3b8" }}>{base(h.invested_inr)}</td>
+                  <td style={{ padding: "11px 10px", textAlign: "right" }}>{base(h.value_inr)}</td>
+                  <td style={{ padding: "11px 10px", textAlign: "right", fontWeight: 700, color: pnlColor(h.pnl_inr) }}>{baseSigned(h.pnl_inr)}</td>
+                  <td style={{ padding: "11px 10px", textAlign: "right", fontWeight: 700, color: pnlColor(h.pnl_pct) }}>{h.pnl_pct >= 0 ? "+" : ""}{h.pnl_pct}%</td>
+                  <td style={{ padding: "11px 10px", textAlign: "right", color: pnlColor(h.day_change_pct) }}>{h.day_change_pct >= 0 ? "+" : ""}{h.day_change_pct}%</td>
+                  <td style={{ padding: "8px 10px", textAlign: "center" }}><span style={{ display: "inline-block", verticalAlign: "middle" }}><Spark data={h.spark} /></span></td>
+                  <td style={{ padding: "11px 10px", textAlign: "center", whiteSpace: "nowrap" }}>
+                    {editing ? (<>
+                      <button onClick={() => saveEdit(h)} title="Save" style={{ ...iconBtn, color: "#00e396", fontSize: 15, marginRight: 8 }}>✓</button>
+                      <button onClick={cancelEdit} title="Cancel" style={{ ...iconBtn, color: "#ff4d4d" }}>✕</button>
+                    </>) : (<>
+                      <button onClick={() => startEdit(h)} title={`Edit ${h.symbol}`} style={{ ...iconBtn, color: "#475569", marginRight: 10 }}>✎</button>
+                      <button onClick={() => removePosition(h)} title={`Remove ${h.symbol}`} style={{ ...iconBtn, color: "#475569" }}>✕</button>
+                    </>)}
+                  </td>
+                </tr>);
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12 }}>
+          Per-share AVG BUY / LTP shown in native currency · INVESTED / VALUE / P&L rolled into {disp} at USDINR {rate} · LTP from yfinance (may lag ~15m) · positions from data/holdings.json. Factual reporting of your cost basis vs. latest price — not advice.
+        </div>
+      </>)}
+
+      {data && !loading && !hasHoldings && (
+        <div style={{ padding: 60, textAlign: "center", color: "#64748b", background: "#0b0f19", borderRadius: 10, border: "1px solid #1e293b", fontFamily: "JetBrains Mono", fontSize: 12 }}>
+          No positions yet. Add your first holding above to start tracking P&L.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+export default function App() {
+  return (
+    <Router>
+      <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: 24, fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box" }}>
+        <div style={{ marginBottom: 20 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0, fontFamily: "JetBrains Mono", color: "#f8fafc" }}>NSE FACTOR SCREENER</h1>
+          <p style={{ color: "#334155", fontSize: 11, margin: "3px 0 0", fontFamily: "JetBrains Mono" }}>Research & screening terminal · descriptive factor rankings · not a signal engine · v5.3.0</p>
+        </div>
+        <Navbar />
+        <Routes>
+          <Route path="/portfolio" element={<PortfolioView />} />
+          <Route path="/" element={<ProfileView />} />
+          <Route path="/screener" element={<ScreenerView />} />
+          <Route path="/breakouts" element={<WeeklyBreakoutsView />} />
+        </Routes>
+      </div>
+    </Router>
+  );
+}

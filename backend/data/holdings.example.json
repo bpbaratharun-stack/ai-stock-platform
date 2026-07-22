@@ -1,0 +1,9 @@
+{
+  "base_currency": "INR",
+  "positions": [
+    { "symbol": "RELIANCE.NS", "exchange": "NSE", "qty": 120, "avg_price": 2410.0 },
+    { "symbol": "HDFCBANK.NS", "exchange": "NSE", "qty": 85, "avg_price": 1640.0 },
+    { "symbol": "AAPL", "exchange": "US", "qty": 30, "avg_price": 205.0 },
+    { "symbol": "NVDA", "exchange": "US", "qty": 40, "avg_price": 118.0 }
+  ]
+}
