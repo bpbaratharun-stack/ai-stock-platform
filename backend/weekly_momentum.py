@@ -53,12 +53,39 @@ volume surge cuts both ways — verify news and liquidity before acting.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+_HERE = Path(__file__).parent
+RESULTS_CACHE = _HERE / "data" / "nse_results_dates.json"
+# "breakout week within +/-1 week of a results date"
+NEAR_PRE_DAYS = 11     # trading week is Mon..Fri (end-4..end); -4-7 = -11
+NEAR_POST_DAYS = 7
+
+
+def load_results_map():
+    """{SYMBOL: [date, ...]} of quarterly-results dates (from nse_results_dates.py).
+    Empty when the cache is absent, so the flag reads as 'unknown' (None)."""
+    if not RESULTS_CACHE.exists():
+        return {}
+    raw = json.loads(RESULTS_CACHE.read_text(encoding="utf-8"))
+    return {s: [date.fromisoformat(d) for d in v.get("results_dates", [])]
+            for s, v in raw.items()}
+
+
+def near_results(results_dates, week_end):
+    """True/False if a results date is within the breakout week +/-1wk; None if
+    the symbol has no data (distinguishes 'no earnings nearby' from 'unknown')."""
+    if results_dates is None:
+        return None
+    lo, hi = week_end - timedelta(days=NEAR_PRE_DAYS), week_end + timedelta(days=NEAR_POST_DAYS)
+    return any(lo <= d <= hi for d in results_dates)
 
 HERE = Path(__file__).parent
 PANEL = HERE / "data" / "panel.parquet"
@@ -321,6 +348,12 @@ def run(cfg):
         "Week Ending": str(wk_end),
         "Days In Week": hits["days"].astype(int),
     })
+
+    # Earnings-adjacency flag: did the breakout land within +/-1 week of a
+    # quarterly-results date? (needs nse_results_dates.py cache; else blank.)
+    rmap = load_results_map()
+    if rmap:
+        out["Near Results"] = [near_results(rmap.get(s), wk_end) for s in out["Symbol"]]
 
     cfg.outdir.mkdir(parents=True, exist_ok=True)
     tag = "partial" if partial else "full"

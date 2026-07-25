@@ -671,6 +671,7 @@ function VCPBreakoutsView() {
     { key: "close_strength", label: "CLOSE STR", numeric: true },
     { key: "tr_contraction", label: "TR CONTR", numeric: true },
     { key: "adtv", label: "ADTV cr", numeric: true },
+    { key: "near_results", label: "NEAR EARN", numeric: false },
   ];
   const rightCols = new Set(COLS.filter((c) => c.numeric).map((c) => c.key));
   const s = data?.summary;
@@ -732,6 +733,11 @@ function VCPBreakoutsView() {
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="close position in weekly range; ≥0.6 required">{num(b.close_strength)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="mean TR last 4 wks / first 4 wks of base; <1 = contraction">{num(b.tr_contraction)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }}>{num(b.adtv)}</td>
+                  <td style={{ padding: "10px", textAlign: "left" }} title="breakout within ±1 week of a quarterly-results date — i.e. possibly earnings drift, not a technical breakout">
+                    {b.near_results == null ? <span style={{ color: "#475569" }}>?</span>
+                      : b.near_results ? <span style={{ color: "#f59e0b", fontWeight: 700 }}>⚡ earnings</span>
+                      : <span style={{ color: "#00e396" }}>technical</span>}
+                  </td>
                   <td style={{ padding: "8px 10px", textAlign: "center" }}><span style={{ display: "inline-block", verticalAlign: "middle" }}><Spark data={b.spark} /></span></td>
                 </tr>))}
               {!view.length && !loading && (
@@ -742,7 +748,7 @@ function VCPBreakoutsView() {
         </div>
       )}
       <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12, lineHeight: 1.6 }}>
-        <b style={{ color: "#64748b" }}>PIVOT</b> = base high (breakout level). <b style={{ color: "#64748b" }}>EXT %</b> = close above pivot (entries &gt;25% rejected). <b style={{ color: "#64748b" }}>DEPTH %</b> = base depth (≤35%). <b style={{ color: "#64748b" }}>TR CONTR</b> &lt; 1 confirms volatility contraction (VCP). Gates: liquid ≥ ₹2 cr/wk, price ≥ ₹30, listed ≥ 60 wk, close &gt; rising 30-wk SMA, volume ≥ 1.5× 20-wk avg, close in top 40% of range. Base window 20 wk (--base-len, spec range 8–40).
+        <b style={{ color: "#64748b" }}>PIVOT</b> = base high (breakout level). <b style={{ color: "#64748b" }}>EXT %</b> = close above pivot (entries &gt;25% rejected). <b style={{ color: "#64748b" }}>DEPTH %</b> = base depth (≤35%). <b style={{ color: "#64748b" }}>TR CONTR</b> &lt; 1 confirms volatility contraction (VCP). <b style={{ color: "#f59e0b" }}>NEAR EARN</b> = breakout within ±1 wk of a quarterly-results date (⚡ = likely earnings-driven, not a clean technical breakout; ? = no earnings data). Gates: liquid ≥ ₹2 cr/wk, price ≥ ₹30, listed ≥ 60 wk, close &gt; rising 30-wk SMA, volume ≥ 1.5× 20-wk avg, close in top 40% of range. Base window 20 wk (--base-len, spec range 8–40).
       </div>
     </div>
   );

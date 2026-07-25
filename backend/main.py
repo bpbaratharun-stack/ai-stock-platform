@@ -906,6 +906,8 @@ def vcp_breakouts(week: str = Query(default=None),
                 "close_strength": _f(r.get("close_strength")),
                 "tr_contraction": _f(r.get("tr_contraction")),
                 "adtv": _f(r.get("adtv_cr")),
+                "near_results": {"True": True, "False": False}.get(
+                    str(r.get("near_results")).strip()),
                 "current_price": round(cur, 2) if cur else None,
                 "since_pct": since,
                 "spark": px.get("spark", []) if px else [],

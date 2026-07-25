@@ -55,7 +55,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from weekly_momentum import ETF_RE, to_weekly
+from weekly_momentum import ETF_RE, load_results_map, near_results, to_weekly
 
 HERE = Path(__file__).parent
 PANEL = HERE / "data" / "panel.parquet"
@@ -121,11 +121,12 @@ def universe_mask(wk: pd.DataFrame, cfg) -> pd.Series:
 # --------------------------------------------------------------------------- #
 # Per-symbol base detection, trigger, and trade simulation
 # --------------------------------------------------------------------------- #
-def scan_symbol(arr, cfg):
+def scan_symbol(arr, cfg, results_dates=None):
     """arr: dict of numpy columns for ONE symbol, ordered oldest->newest.
     Returns (signal_rows, trade_rows). A signal is a triggered breakout; a trade
     is that signal simulated forward (only where forward data exists)."""
     wk = arr["week"]
+    wend = arr["week_end"]
     hi, lo, cl, op = arr["high"], arr["low"], arr["close"], arr["open"]
     vol, tr, cs = arr["volume"], arr["tr"], arr["close_strength"]
     volavg20, upass = arr["volavg20"], arr["universe_pass"]
@@ -167,6 +168,7 @@ def scan_symbol(arr, cfg):
         ):
             continue
 
+        nr = near_results(results_dates, wend[t])
         row = {
             "symbol": arr["symbol"], "week": str(wk[t]),
             "close": round(float(cl[t]), 2), "base_high": round(float(bh), 2),
@@ -177,6 +179,7 @@ def scan_symbol(arr, cfg):
             "ceiling_touches": touches,
             "tr_contraction": round(float(tr_last4 / tr_first4), 2),
             "adtv_cr": round(float(arr["med_turnover"][t] / RS_CR), 2),
+            "near_results": nr,
         }
         signals.append(row)
 
@@ -217,20 +220,24 @@ def scan_symbol(arr, cfg):
             "mfe_pct": round(float(mfe), 2),
             "mae_pct": round(float(mae), 2),
             "hold12_pct": round(float(hold12), 2) if np.isfinite(hold12) else np.nan,
+            "near_results": nr,
         })
 
     return signals, trades
 
 
-def scan_all(wk: pd.DataFrame, cfg):
+def scan_all(wk: pd.DataFrame, cfg, results_map=None):
+    results_map = results_map or {}
     cols = ["high", "low", "close", "open", "volume", "tr", "trn", "close_strength",
             "volavg20", "universe_pass", "med_turnover"]
     all_sig, all_trd = [], []
     for sym, grp in wk.groupby("symbol", observed=True):
         arr = {c: grp[c].to_numpy() for c in cols}
         arr["week"] = grp["week"].to_numpy()
-        arr["symbol"] = sym.replace(".NS", "")
-        s, t = scan_symbol(arr, cfg)
+        arr["week_end"] = [pd.Timestamp(x).date() for x in grp["week_end"].to_numpy()]
+        clean = sym.replace(".NS", "")
+        arr["symbol"] = clean
+        s, t = scan_symbol(arr, cfg, results_map.get(clean))
         all_sig.extend(s)
         all_trd.extend(t)
     return pd.DataFrame(all_sig), pd.DataFrame(all_trd)
@@ -291,6 +298,24 @@ def print_backtest(trades: pd.DataFrame, benchmark_by_week: pd.Series):
               f"over {len(wk)} weeks")
         print(f"  weeks beating bench    : {(wk['exc'] > 0).mean() * 100:.0f}%")
 
+    # EARNINGS DRIFT TEST: is the whole result just breakouts that coincide with
+    # a quarterly-results announcement (post-earnings drift in disguise)?
+    if "near_results" in closed.columns and closed["near_results"].notna().any():
+        known = closed[closed["near_results"].notna()]
+        near = known[known["near_results"]]
+        away = known[~known["near_results"]]
+        cov = len(known) / len(closed) * 100
+        near_share = len(near) / len(known) * 100 if len(known) else 0
+        print(f"\n  --- earnings-drift split (breakout within +/-1wk of results) ---")
+        print(f"  earnings-date coverage : {cov:.0f}% of closed trades "
+              f"({len(near)} near / {len(away)} away)")
+        print(f"  near earnings : avg_rule {near['rule_pct'].mean():+.2f}%  (by week "
+              f"{near.groupby('week')['rule_pct'].mean().mean():+.2f}%)")
+        print(f"  away from it  : avg_rule {away['rule_pct'].mean():+.2f}%  (by week "
+              f"{away.groupby('week')['rule_pct'].mean().mean():+.2f}%)")
+        print(f"  {near_share:.0f}% of signals are earnings-adjacent. If 'near' clearly")
+        print("  out-returns 'away', the thin signal is largely earnings drift.")
+
     print("\n  Read this soberly: the rule has a stop (caps losers, caps horizon);")
     print("  the benchmark is 12w buy-hold, so the EDGE line is the fair test. A")
     print("  positive avg_rule_pct with a bad win rate is the expected shape IF it")
@@ -318,6 +343,14 @@ def run(cfg):
     wk = add_features(wk)
     wk["universe_pass"] = universe_mask(wk, cfg)
 
+    results_map = load_results_map()
+    if results_map:
+        print(f"  earnings dates loaded for {len(results_map)} symbols "
+              f"(nse_results_dates.json)")
+    else:
+        print("  NOTE: no earnings-date cache — run nse_results_dates.py to enable "
+              "the near_results flag.")
+
     weeks = wk["week"].drop_duplicates().sort_values()
     target = weeks.iloc[-1]
     tsnap = wk[wk["week"] == target]
@@ -338,7 +371,7 @@ def run(cfg):
         print("  real weekly values, so the Friday trigger is provisional. Re-run at")
         print("  week close, or pass --complete-weeks-only.")
 
-    signals, trades = scan_all(wk, cfg)
+    signals, trades = scan_all(wk, cfg, results_map)
 
     # ---- this week's fresh signals ----------------------------------------
     cfg.outdir.mkdir(parents=True, exist_ok=True)
@@ -358,7 +391,7 @@ def run(cfg):
     if not this_week.empty:
         show = this_week[["symbol", "close", "base_high", "ext_above_pivot_pct",
                           "base_depth_pct", "vol_mult", "close_strength",
-                          "ceiling_touches", "tr_contraction", "adtv_cr"]]
+                          "tr_contraction", "adtv_cr", "near_results"]]
         print(show.to_string(index=False))
 
     # ---- backtest ----------------------------------------------------------

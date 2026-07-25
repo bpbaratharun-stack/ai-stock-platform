@@ -183,3 +183,40 @@ the move back on the missing day. Re-run after the week closes, or use
 `--complete-weeks-only`.
 
 **Not investment advice** — a mechanical screen, not a recommendation.
+
+---
+
+# Earnings-proximity flag
+
+`nse_results_dates.py` fetches each symbol's historical quarterly-results dates
+from NSE's public board-meeting API (no login; cookie-primed; cached to
+`data/nse_results_dates.json`). Both breakout scanners then carry a
+`near_results` flag — **True if the breakout week is within ±1 week of a results
+date** — and the VCP `--backtest` splits its trades by it.
+
+```bash
+./venv/Scripts/python.exe nse_results_dates.py    # one-time ~9 min fetch, cached
+```
+
+## Why: is the breakout "edge" just earnings drift?
+
+Every hand-checked breakout chart had a results marker next to the move. The
+backtest now answers it directly (VCP, week-clustered `avg_rule_pct`):
+
+```
+earnings-date coverage : 100% of closed trades (415 near / 1040 away)
+near earnings : +2.30% / week
+away from it  : +0.69% / week
+```
+
+**Earnings-adjacent breakouts return ~3× the others.** So the VCP signal's
+(already thin, benchmark-lagging) performance is disproportionately earnings
+drift wearing a technical costume — the away-from-earnings breakout on its own is
+barely distinguishable from noise. This does **not** rescue the screen (it still
+trails its universe by ~1.5%), but it tells you *where* the little that's there
+comes from, and warns that a "clean" technical breakout with no results nearby is
+the weaker setup, not the stronger one.
+
+Live lists (`weekly_momentum_*` and `breakout_vcp_*`) and the dashboard tabs show
+the flag per name, so you can see at a glance whether this week's breakout is
+riding an earnings release.
