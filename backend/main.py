@@ -203,7 +203,7 @@ def fetch_vix():
     hit, v = CACHE.get("vix", TTL_VIX)
     if hit: return v
     try:
-        raw = _flatten(yf.download("^INDIAVIX", period="5d", progress=False, timeout=5))
+        raw = _flatten(yf.download("^INDIAVIX", period="5d", progress=False, timeout=5, auto_adjust=False))
         cur, prev = safe_scalar(raw["Close"].iloc[-1:]), safe_scalar(raw["Close"].iloc[-2:-1])
         res = {"current": round(cur, 2), "change_pct": round((cur - prev) / prev * 100, 2),
                "is_fallback": False}
@@ -217,7 +217,7 @@ def fetch_nifty_3m():
     hit, v = CACHE.get("nifty3m", TTL_NIFTY)
     if hit: return v
     try:
-        raw = _flatten(yf.download("^NSEI", period="3mo", progress=False, timeout=5))
+        raw = _flatten(yf.download("^NSEI", period="3mo", progress=False, timeout=5, auto_adjust=False))
         roi = (safe_scalar(raw["Close"].iloc[-1:]) - safe_scalar(raw["Close"].iloc[:1])) \
               / safe_scalar(raw["Close"].iloc[:1]) * 100
         res = (round(roi, 2), False)
@@ -233,7 +233,7 @@ def fetch_usdinr():
     hit, v = CACHE.get("usdinr", TTL_PX)
     if hit: return v
     try:
-        raw = _flatten(yf.download("USDINR=X", period="5d", progress=False, timeout=5))
+        raw = _flatten(yf.download("USDINR=X", period="5d", progress=False, timeout=5, auto_adjust=False))
         res = {"rate": round(safe_scalar(raw["Close"].iloc[-1:]), 4), "is_fallback": False}
     except Exception as exc:
         log.warning("USDINR fetch failed (%s)", exc)
@@ -255,7 +255,7 @@ def fetch_last_prices(symbols: list[str]) -> dict:
     try:
         multi = len(syms) > 1
         raw = yf.download(syms, period="1mo", progress=False, timeout=15,
-                          group_by="ticker" if multi else "column")
+                          group_by="ticker" if multi else "column", auto_adjust=False)
         for s in syms:
             try:
                 closes = (raw[s]["Close"] if multi else _flatten(raw)["Close"]).dropna()
@@ -272,28 +272,40 @@ def fetch_last_prices(symbols: list[str]) -> dict:
     return out
 
 
-def fetch_high_since(symbols: list[str], since_date: str) -> dict:
-    """{symbol: max daily High on/after since_date} — the post-breakout peak,
-    for judging whether a name genuinely ran up or just spiked and faded."""
+# Mechanical post-breakout rule + live-state thresholds (all disclosed in the UI)
+BREAKOUT_HORIZON_TD = 20      # fixed-horizon exit: next-day open held ~4 weeks
+STATE_FAIL_PCT = -5.0         # NOW this far below the breakout close -> FAILED
+STATE_EXT_PCT = 10.0          # NOW this far above the breakout close -> EXTENDED
+
+
+def fetch_ohlc_since(symbols: list[str], since_date: str) -> dict:
+    """Per-symbol post-breakout stats from since_date: the high, the first
+    session's open (mechanical next-day entry) and the daily close path
+    (for a fixed-horizon exit). One cached batch download."""
     syms = sorted({s.upper() for s in symbols})
     if not syms: return {}
-    key = f"high:{since_date}:" + ",".join(syms)
+    key = f"ohlc:{since_date}:" + ",".join(syms)
     hit, v = CACHE.get(key, TTL_PX)
     if hit: return v
 
     out: dict = {}
     try:
         multi = len(syms) > 1
-        raw = yf.download(syms, start=since_date, progress=False, timeout=15,
-                          group_by="ticker" if multi else "column")
+        raw = yf.download(syms, start=since_date, progress=False, timeout=20,
+                          group_by="ticker" if multi else "column", auto_adjust=False)
         for s in syms:
             try:
-                highs = (raw[s]["High"] if multi else _flatten(raw)["High"]).dropna()
-                out[s] = round(float(highs.max()), 2) if len(highs) else None
+                d = raw[s] if multi else _flatten(raw)
+                o, h, c = d["Open"].dropna(), d["High"].dropna(), d["Close"].dropna()
+                out[s] = {
+                    "high": round(float(h.max()), 2) if len(h) else None,
+                    "entry_open": round(float(o.iloc[0]), 2) if len(o) else None,
+                    "closes": [round(float(x), 2) for x in c.tolist()],
+                }
             except Exception:
                 out[s] = None
     except Exception as exc:
-        log.warning("High-since fetch failed: %s", exc)
+        log.warning("OHLC-since fetch failed: %s", exc)
         out = {s: None for s in syms}
     CACHE.set(key, out)
     return out
@@ -395,7 +407,7 @@ def profile(symbol: str):
     ohlc, comparison, current_close = [], [], store_price
     breakdown = []
     try:
-        raw = _flatten(yf.download(sym, period="1y", progress=False, timeout=5))
+        raw = _flatten(yf.download(sym, period="1y", progress=False, timeout=5, auto_adjust=False))
         if not raw.empty and len(raw) >= MIN_HISTORY_BARS:
             df = engineer_features(pd.DataFrame({
                 "Open": raw["Open"].squeeze(), "High": raw["High"].squeeze(),
@@ -750,7 +762,7 @@ def weekly_breakouts(week: str = Query(default=None),
     symbols = [f"{str(s).strip().upper()}.NS" for s in df["Symbol"].tolist()]
     prices = fetch_last_prices(symbols)
     since_date = (pd.to_datetime(chosen) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    peaks = fetch_high_since(symbols, since_date)
+    hist = fetch_ohlc_since(symbols, since_date)
 
     rows = []
     for _, r in df.iterrows():
@@ -759,8 +771,27 @@ def weekly_breakouts(week: str = Query(default=None),
         bclose = _f(r.get("Close"))
         cur = px["last"] if px else None
         since = round((cur / bclose - 1) * 100, 2) if (cur and bclose) else None
-        peak = peaks.get(f"{sym}.NS")
-        peak_pct = round((peak / bclose - 1) * 100, 2) if (peak and bclose) else None
+
+        h = hist.get(f"{sym}.NS")
+        peak = h["high"] if h else None
+
+        # Mechanical rule: buy the first session's open after the breakout, hold a
+        # fixed horizon; if the horizon hasn't elapsed yet, mark to the latest close.
+        rule_pct, rule_open = None, None
+        if h and h.get("entry_open") and h.get("closes"):
+            entry, closes = h["entry_open"], h["closes"]
+            if len(closes) >= BREAKOUT_HORIZON_TD:
+                exit_px, rule_open = closes[BREAKOUT_HORIZON_TD - 1], False
+            else:
+                exit_px, rule_open = closes[-1], True
+            rule_pct = round((exit_px / entry - 1) * 100, 2)
+
+        # Live state, keyed off NOW vs the breakout close (thresholds disclosed).
+        state = None
+        if since is not None:
+            state = ("FAILED" if since <= STATE_FAIL_PCT
+                     else "EXTENDED" if since >= STATE_EXT_PCT else "ACTIVE")
+
         rows.append({
             "symbol": sym,
             "score": _f(r.get("Score")),
@@ -776,12 +807,15 @@ def weekly_breakouts(week: str = Query(default=None),
             "current_price": round(cur, 2) if cur else None,
             "since_pct": since,
             "high_since": peak,
-            "peak_pct": peak_pct,
+            "state": state,
+            "rule_pct": rule_pct,
+            "rule_open": rule_open,
             "spark": px.get("spark", []) if px else [],
             "stale": px is None,
         })
 
     tracked = [x["since_pct"] for x in rows if x["since_pct"] is not None]
+    states = [x["state"] for x in rows if x["state"]]
     return {
         "week_ending": chosen,
         "available_weeks": weeks,
@@ -790,7 +824,104 @@ def weekly_breakouts(week: str = Query(default=None),
             "avg_since_pct": round(sum(tracked) / len(tracked), 2) if tracked else None,
             "winners": sum(1 for x in tracked if x > 0),
             "losers": sum(1 for x in tracked if x < 0),
+            "active": states.count("ACTIVE"),
+            "extended": states.count("EXTENDED"),
+            "failed": states.count("FAILED"),
         },
+        "rule": {
+            "entry": "first session open after the breakout week",
+            "horizon_td": BREAKOUT_HORIZON_TD,
+            "state_fail_pct": STATE_FAIL_PCT,
+            "state_ext_pct": STATE_EXT_PCT,
+            "note": "RULE % is marked to the latest close until the horizon elapses; "
+                    "SCORE and GATES are as-of the breakout scan, not re-evaluated live.",
+        },
+        "breakouts": rows,
+        "disclaimer": DISCLAIMER,
+    }
+
+
+def _vcp_files():
+    """(week_ending, path) for each breakout_vcp_YYYY-MM-DD_full.csv, newest first."""
+    data_dir = os.path.dirname(SCORES_PATH)
+    out = []
+    for f in glob.glob(os.path.join(data_dir, "breakout_vcp_*_full.csv")):
+        m = re.search(r"breakout_vcp_(\d{4}-\d{2}-\d{2})_full\.csv$", os.path.basename(f))
+        if m:
+            out.append((m.group(1), f))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return out
+
+
+# The VCP/Stage-2 screen was backtested and did NOT beat its own universe.
+# This verdict travels with every response so the UI can never present it as a signal.
+VCP_VERDICT = (
+    "Backtest 2022–2026 (price-normalised contraction, clustered by week): NO edge "
+    "over its own gate-passing universe — average 12-week edge about −1.5% across "
+    "144 weeks, and only 44% of weeks beat the equal-weight benchmark. The flattering "
+    "+3.6%/trade average collapses to +0.9%/week once same-week trades are clustered. "
+    "Research/transparency only: a precisely-defined filter with no proven "
+    "forward-return edge, not a buy list."
+)
+
+
+@app.get("/vcp-breakouts")
+def vcp_breakouts(week: str = Query(default=None),
+                  limit: int = Query(default=60, ge=1, le=300)):
+    """VCP / Weinstein Stage-2 weekly breakout screen (weekly_breakout_vcp.py),
+    enriched with live price since the breakout close. Research view — the
+    backtest verdict (no edge) rides along in every response."""
+    files = _vcp_files()
+    if not files:
+        raise HTTPException(404, "No VCP breakout files found (data/breakout_vcp_*_full.csv). "
+                                 "Run weekly_breakout_vcp.py first.")
+    weeks = [w for w, _ in files]
+    chosen = week if (week and week in weeks) else weeks[0]
+    path = dict(files)[chosen]
+
+    try:
+        df_full = pd.read_csv(path)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not read {os.path.basename(path)}: {exc}")
+    total_signals = len(df_full)               # summary counts the WHOLE file...
+    df = df_full.head(limit)                    # ...only the display is limited
+
+    rows = []
+    if "symbol" in df.columns and not df.empty:
+        symbols = [f"{str(s).strip().upper()}.NS" for s in df["symbol"].tolist()]
+        prices = fetch_last_prices(symbols)
+        for _, r in df.iterrows():
+            sym = str(r["symbol"]).strip().upper()
+            px = prices.get(f"{sym}.NS")
+            bclose = _f(r.get("close"))
+            cur = px["last"] if px else None
+            since = round((cur / bclose - 1) * 100, 2) if (cur and bclose) else None
+            rows.append({
+                "symbol": sym,
+                "breakout_close": round(bclose, 2) if bclose else None,
+                "base_high": _f(r.get("base_high")),
+                "ext_above_pivot_pct": _f(r.get("ext_above_pivot_pct")),
+                "base_depth_pct": _f(r.get("base_depth_pct")),
+                "vol_mult": _f(r.get("vol_mult")),
+                "close_strength": _f(r.get("close_strength")),
+                "tr_contraction": _f(r.get("tr_contraction")),
+                "adtv": _f(r.get("adtv_cr")),
+                "current_price": round(cur, 2) if cur else None,
+                "since_pct": since,
+                "spark": px.get("spark", []) if px else [],
+                "stale": px is None,
+            })
+
+    tracked = [x["since_pct"] for x in rows if x["since_pct"] is not None]
+    return {
+        "week_ending": chosen,
+        "available_weeks": weeks,
+        "summary": {
+            "n": total_signals,
+            "shown": len(rows),
+            "avg_since_pct": round(sum(tracked) / len(tracked), 2) if tracked else None,
+        },
+        "verdict": VCP_VERDICT,
         "breakouts": rows,
         "disclaimer": DISCLAIMER,
     }
@@ -814,7 +945,7 @@ def explain(symbol: str):
     # Compute the same factor breakdown /profile shows, so Gemini cites real numbers.
     breakdown = []
     try:
-        raw = _flatten(yf.download(sym, period="1y", progress=False, timeout=5))
+        raw = _flatten(yf.download(sym, period="1y", progress=False, timeout=5, auto_adjust=False))
         if not raw.empty and len(raw) >= MIN_HISTORY_BARS:
             bdf = engineer_features(pd.DataFrame({
                 "Open": raw["Open"].squeeze(), "High": raw["High"].squeeze(),
