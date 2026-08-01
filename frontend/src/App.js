@@ -80,7 +80,7 @@ function Navbar() {
     return <Link to={p} style={{ color: a ? "#00d4ff" : "#94a3b8", textDecoration: "none", fontWeight: 700, fontSize: 11, padding: "9px 18px", background: a ? "rgba(0,212,255,0.1)" : "rgba(30,41,59,0.4)", borderRadius: 6, border: `1px solid ${a ? "#00d4ff" : "#1e293b"}`, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>{l}</Link>;
   };
   return <div style={{ display: "flex", gap: 10, flexWrap: "wrap", background: "#0b0f19", padding: "12px 16px", borderRadius: 8, border: "1px solid #1e293b", marginBottom: 24 }}>
-    {link("/portfolio", "🧮 MY PORTFOLIO")}{link("/", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}{link("/vcp", "🔬 VCP BREAKOUTS")}
+    {link("/portfolio", "🧮 MY PORTFOLIO")}{link("/booked", "💰 PROFIT BOOKING")}{link("/", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}{link("/vcp", "🔬 VCP BREAKOUTS")}
   </div>;
 }
 
@@ -1114,6 +1114,168 @@ function PortfolioView() {
 }
 
 // ============================================================================
+// ============================================================ PROFIT BOOKING
+const signedINR = (v) => `${v >= 0 ? "+" : "−"}₹${Math.round(Math.abs(v)).toLocaleString("en-IN")}`;
+
+function BookedView() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [held, setHeld] = useState({});
+  const [form, setForm] = useState({ symbol: "", exchange: "NSE", qty: "", buy_price: "", sell_price: "", date: "", note: "", reduce_holding: true });
+  const [saving, setSaving] = useState(false);
+  const [formMsg, setFormMsg] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try { const { data: res } = await axios.get(`${API_BASE}/booked`); setData(res); }
+    catch (e) { setError(e?.response?.data?.detail ?? "Failed to load booked trades."); }
+    finally { setLoading(false); }
+  }, []);
+  const loadHeld = useCallback(async () => {
+    try {
+      const { data: res } = await axios.get(`${API_BASE}/portfolio`);
+      const m = {};
+      (res.holdings ?? []).forEach((h) => { m[h.symbol.toUpperCase()] = { exchange: h.exchange, avg_price: h.avg_price }; });
+      setHeld(m);
+    } catch { /* holdings optional for prefill */ }
+  }, []);
+  useEffect(() => { load(); loadHeld(); }, [load, loadHeld]);
+
+  const onSymbol = (v) => {
+    const sym = v.toUpperCase();
+    const h = held[sym.replace(/\.NS$/, "")];
+    setForm((f) => ({ ...f, symbol: sym, ...(h ? { exchange: h.exchange, buy_price: String(h.avg_price) } : {}) }));
+  };
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    const qty = parseFloat(form.qty), buy = parseFloat(form.buy_price), sell = parseFloat(form.sell_price);
+    if (!form.symbol.trim() || !(qty > 0) || !(buy > 0) || !(sell > 0)) { setFormMsg({ err: true, text: "Enter a symbol, quantity, and positive buy and sell prices." }); return; }
+    setSaving(true); setFormMsg(null);
+    try {
+      const body = { symbol: form.symbol.trim(), exchange: form.exchange, qty, buy_price: buy, sell_price: sell, note: form.note, reduce_holding: form.reduce_holding };
+      if (form.date) body.date = form.date;
+      const { data: res } = await axios.post(`${API_BASE}/booked`, body);
+      const rs = res.reduced?.status;
+      const redMsg = rs === "reduced" ? ` · holding reduced to ${res.reduced.remaining_qty}` : rs === "closed" ? " · holding fully closed" : rs === "not_held" ? " · (no matching holding found to reduce)" : "";
+      setForm((f) => ({ symbol: "", exchange: f.exchange, qty: "", buy_price: "", sell_price: "", date: "", note: "", reduce_holding: f.reduce_holding }));
+      setFormMsg({ err: false, text: `Booked ${res.trade.symbol}: ${signedINR(res.trade.realized_inr)} realized (${res.trade.realized_pct >= 0 ? "+" : ""}${res.trade.realized_pct}%)${redMsg}.` });
+      await load(); await loadHeld();
+    } catch (err) { setFormMsg({ err: true, text: err?.response?.data?.detail ?? "Could not book the trade." }); }
+    finally { setSaving(false); }
+  };
+
+  const remove = async (t) => {
+    if (!window.confirm(`Delete booked ${t.symbol} (${t.date})? This only edits the ledger — it won't restore the holding.`)) return;
+    try { await axios.delete(`${API_BASE}/booked/${t.id}`); await load(); }
+    catch (err) { setError(err?.response?.data?.detail ?? "Could not delete."); }
+  };
+
+  const finp = { padding: "8px 11px", borderRadius: 5, border: "1px solid #1e293b", background: "#020617", color: "#f8fafc", fontFamily: "JetBrains Mono", fontSize: 12 };
+  const flab = { fontSize: 9, color: "#64748b", fontFamily: "JetBrains Mono", display: "block", marginBottom: 4, letterSpacing: "0.05em" };
+  const s = data?.summary;
+  const trades = data?.trades ?? [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, background: "#0b0f19", padding: 16, borderRadius: 8, border: "1px solid #1e293b", marginBottom: 20 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 13, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono" }}>PROFIT BOOKING — REALIZED P&L</h2>
+          <p style={{ margin: "2px 0 0", fontSize: 11, color: "#64748b" }}>Ledger of booked (sold) trades · realized ₹ locked at the sale (US converted at the day's USDINR).</p>
+        </div>
+        <button onClick={() => { load(); loadHeld(); }} disabled={loading} style={{ background: loading ? "#1e293b" : "#00d4ff", color: loading ? "#64748b" : "#020617", border: "none", padding: "9px 18px", borderRadius: 6, fontWeight: 800, cursor: loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "JetBrains Mono" }}>{loading ? "…" : "↻ REFRESH"}</button>
+      </div>
+
+      {error && <ErrorBanner message={error} />}
+
+      {s && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 16 }}>
+          <StatCard label="TOTAL REALIZED P&L" value={s.n ? signedINR(s.realized_inr) : "—"} accent={s.realized_inr >= 0 ? "#00e396" : "#ff4d4d"} />
+          <StatCard label="BOOKED TRADES" value={s.n} />
+          <StatCard label="WIN RATE" value={s.win_rate == null ? "—" : `${s.win_rate}%`} accent="#38bdf8" badge={s.n ? `${s.wins}W · ${s.losses}L` : null} />
+          <StatCard label="BEST BOOK" value={s.best ? `${s.best.symbol}  ${signedINR(s.best.realized_inr)}` : "—"} accent="#00e396" />
+        </div>
+      )}
+
+      <form onSubmit={submit} style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", background: "#0b0f19", padding: 14, borderRadius: 10, border: "1px solid #1e293b", marginBottom: 16 }}>
+        <div style={{ fontSize: 11, color: "#00e396", fontWeight: 800, fontFamily: "JetBrains Mono", alignSelf: "center", marginRight: 4 }}>+ BOOK A SALE</div>
+        <div>
+          <label style={flab}>SYMBOL</label>
+          <input value={form.symbol} onChange={(e) => onSymbol(e.target.value)} placeholder={form.exchange === "US" ? "NVDA" : "TCS"} list="held-syms" style={{ ...finp, width: 120 }} />
+          <datalist id="held-syms">{Object.keys(held).map((k) => <option key={k} value={k} />)}</datalist>
+        </div>
+        <div>
+          <label style={flab}>EXCHANGE</label>
+          <select value={form.exchange} onChange={(e) => setForm((f) => ({ ...f, exchange: e.target.value }))} style={finp}>
+            <option value="NSE">NSE</option><option value="US">US</option>
+          </select>
+        </div>
+        <div>
+          <label style={flab}>QTY SOLD</label>
+          <input value={form.qty} onChange={(e) => setForm((f) => ({ ...f, qty: e.target.value }))} inputMode="decimal" placeholder="0" style={{ ...finp, width: 80 }} />
+        </div>
+        <div>
+          <label style={flab}>BUY PRICE ({form.exchange === "US" ? "$" : "₹"})</label>
+          <input value={form.buy_price} onChange={(e) => setForm((f) => ({ ...f, buy_price: e.target.value }))} inputMode="decimal" placeholder="0.00" style={{ ...finp, width: 100 }} />
+        </div>
+        <div>
+          <label style={flab}>SELL PRICE ({form.exchange === "US" ? "$" : "₹"})</label>
+          <input value={form.sell_price} onChange={(e) => setForm((f) => ({ ...f, sell_price: e.target.value }))} inputMode="decimal" placeholder="0.00" style={{ ...finp, width: 100 }} />
+        </div>
+        <div>
+          <label style={flab}>DATE</label>
+          <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} style={{ ...finp, width: 140 }} />
+        </div>
+        <div>
+          <label style={flab}>NOTE</label>
+          <input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} placeholder="optional" style={{ ...finp, width: 130 }} />
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "#94a3b8", fontFamily: "JetBrains Mono", cursor: "pointer", alignSelf: "center" }}>
+          <input type="checkbox" checked={form.reduce_holding} onChange={(e) => setForm((f) => ({ ...f, reduce_holding: e.target.checked }))} />
+          reduce holding
+        </label>
+        <button type="submit" disabled={saving} style={{ background: saving ? "#1e293b" : "#00e396", color: saving ? "#64748b" : "#020617", border: "none", padding: "9px 20px", borderRadius: 6, fontWeight: 800, cursor: saving ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "JetBrains Mono" }}>{saving ? "BOOKING…" : "BOOK"}</button>
+        {formMsg && <span style={{ fontSize: 11, fontFamily: "JetBrains Mono", color: formMsg.err ? "#ff4d4d" : "#00e396", fontWeight: 700, flexBasis: "100%" }}>{formMsg.text}</span>}
+      </form>
+
+      {loading && !data ? <p style={{ color: "#00d4ff", fontSize: 11, fontFamily: "JetBrains Mono", padding: "16px 0" }}>Loading ledger…</p> : trades.length === 0 ? (
+        <div style={{ padding: 60, textAlign: "center", color: "#64748b", background: "#0b0f19", borderRadius: 10, border: "1px solid #1e293b", fontFamily: "JetBrains Mono", fontSize: 12 }}>
+          No booked trades yet. Record a sale above to start tracking realized profits.
+        </div>
+      ) : (
+        <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>
+            <thead><tr style={{ borderBottom: "1px solid #1e293b", color: "#64748b", fontSize: 10, letterSpacing: "0.05em" }}>
+              {["DATE", "SYMBOL", "MKT", "QTY", "BUY", "SELL", "REALIZED ₹", "RET %", "NOTE", ""].map((h, i) => (
+                <th key={i} style={{ padding: "0 10px 8px", textAlign: i >= 3 && i <= 7 ? "right" : "left", fontWeight: 600 }}>{h}</th>))}
+            </tr></thead>
+            <tbody>
+              {trades.map((t) => (
+                <tr key={t.id} style={{ borderBottom: "1px solid #0f172a" }}>
+                  <td style={{ padding: "10px", color: "#94a3b8" }}>{t.date}</td>
+                  <td style={{ padding: "10px", fontWeight: 700, color: "#00d4ff" }}>{t.symbol}</td>
+                  <td style={{ padding: "10px" }}><span style={{ background: t.exchange === "US" ? "rgba(245,158,11,0.12)" : "rgba(0,212,255,0.1)", color: t.exchange === "US" ? "#f59e0b" : "#00d4ff", padding: "2px 7px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{t.exchange}</span></td>
+                  <td style={{ padding: "10px", textAlign: "right" }}>{t.qty}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }}>{nativePx(t.buy_price, t.currency)}</td>
+                  <td style={{ padding: "10px", textAlign: "right" }}>{nativePx(t.sell_price, t.currency)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: pnlColor(t.realized_inr) }}>{signedINR(t.realized_inr)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", fontWeight: 700, color: pnlColor(t.realized_pct) }}>{t.realized_pct >= 0 ? "+" : ""}{t.realized_pct}%</td>
+                  <td style={{ padding: "10px", color: "#64748b", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis" }}>{t.note}</td>
+                  <td style={{ padding: "10px", textAlign: "center" }}><button onClick={() => remove(t)} title="Delete ledger entry" style={{ background: "transparent", border: "none", color: "#475569", cursor: "pointer", fontSize: 13, fontFamily: "JetBrains Mono" }}>✕</button></td>
+                </tr>))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12 }}>
+            REALIZED ₹ = (sell − buy) × qty, in INR (US booked at that day's USDINR, so it doesn't drift with today's rate) · "reduce holding" subtracts the sold qty from the matching position on the Portfolio tab. Records your own trades — not advice.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 export default function App() {
   return (
     <Router>
@@ -1125,6 +1287,7 @@ export default function App() {
         <Navbar />
         <Routes>
           <Route path="/portfolio" element={<PortfolioView />} />
+          <Route path="/booked" element={<BookedView />} />
           <Route path="/" element={<ProfileView />} />
           <Route path="/screener" element={<ScreenerView />} />
           <Route path="/breakouts" element={<WeeklyBreakoutsView />} />

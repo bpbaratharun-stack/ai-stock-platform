@@ -8,3 +8,5 @@ models/
 
 # Personal portfolio data — keep real holdings out of git (see holdings.example.json)
 backend/data/holdings.json
+# Realized-trade ledger — personal, keep out of git
+backend/data/booked.json

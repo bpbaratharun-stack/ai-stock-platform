@@ -14,6 +14,7 @@ import os
 import re
 import glob
 import json
+import uuid
 import logging
 from contextlib import asynccontextmanager
 
@@ -58,6 +59,10 @@ HOLDINGS_PATH = os.environ.get("HOLDINGS_PATH") or next(
                  os.path.join(os.path.dirname(_HERE), "data", "holdings.json"))
      if os.path.exists(p)),
     os.path.join(_HERE, "data", "holdings.json"))
+
+# Realized-trade ledger lives beside holdings.json.
+BOOKED_PATH = os.environ.get("BOOKED_PATH") or os.path.join(
+    os.path.dirname(HOLDINGS_PATH), "booked.json")
 
 TTL_VIX, TTL_NIFTY, TTL_PX = 300, 300, 300
 FALLBACK_VIX = 16.0
@@ -534,6 +539,26 @@ def save_holdings(doc: dict) -> None:
     os.replace(tmp, HOLDINGS_PATH)
 
 
+def load_booked() -> dict:
+    """Read the realized-trade ledger (booked.json). Empty if absent."""
+    if not os.path.exists(BOOKED_PATH):
+        return {"trades": []}
+    try:
+        with open(BOOKED_PATH, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        trades = doc.get("trades", [])
+        return {"trades": trades if isinstance(trades, list) else []}
+    except Exception as exc:
+        raise HTTPException(500, f"Could not parse booked.json: {exc}")
+
+
+def save_booked(doc: dict) -> None:
+    tmp = BOOKED_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+    os.replace(tmp, BOOKED_PATH)
+
+
 def _normalize_holding_symbol(sym: str, exch: str) -> str:
     """NSE positions carry a .NS suffix; US positions are the bare ticker."""
     s = sym.strip().upper()
@@ -718,6 +743,115 @@ def portfolio():
         "stale_symbols": stale,
         "disclaimer": DISCLAIMER,
     }
+
+
+def _reduce_holding(sym: str, exch: str, qty: float):
+    """Reduce a holding's quantity after a booked sell; remove it if fully closed."""
+    try:
+        doc = load_holdings()
+    except HTTPException:
+        return {"status": "no_holdings_file"}
+    for p in doc["positions"]:
+        if str(p["symbol"]).upper() == sym and str(p.get("exchange", "NSE")).upper() == exch:
+            new_q = round(float(p["qty"]) - qty, 4)
+            if new_q > 0:
+                p["qty"] = new_q
+                save_holdings(doc)
+                return {"status": "reduced", "remaining_qty": new_q}
+            doc["positions"] = [x for x in doc["positions"]
+                                if not (str(x["symbol"]).upper() == sym
+                                        and str(x.get("exchange", "NSE")).upper() == exch)]
+            save_holdings(doc)
+            return {"status": "closed"}
+    return {"status": "not_held"}
+
+
+def _booking_row(t: dict) -> dict:
+    """Attach realized P&L (native + INR at the booked FX) to a stored trade."""
+    qty, buy, sell = float(t.get("qty", 0)), float(t.get("buy_price", 0)), float(t.get("sell_price", 0))
+    fx = float(t.get("fx_rate", 1.0))
+    return {
+        "id": t.get("id"),
+        "symbol": str(t.get("symbol", "")).replace(".NS", "").replace(".BO", ""),
+        "exchange": t.get("exchange", "NSE"),
+        "currency": "USD" if t.get("exchange") == "US" else "INR",
+        "qty": round(qty, 4), "buy_price": round(buy, 2), "sell_price": round(sell, 2),
+        "date": t.get("date"), "note": t.get("note", ""), "fx_rate": round(fx, 4),
+        "proceeds_inr": round(sell * qty * fx, 2),
+        "realized_inr": round((sell - buy) * qty * fx, 2),
+        "realized_pct": round((sell / buy - 1) * 100, 2) if buy else 0.0,
+    }
+
+
+class BookingIn(BaseModel):
+    symbol: str
+    exchange: str = "NSE"
+    qty: float
+    buy_price: float
+    sell_price: float
+    date: str | None = None
+    note: str = ""
+    reduce_holding: bool = False
+
+
+@app.get("/booked")
+def booked():
+    """Realized-P&L ledger with per-trade and aggregate figures, INR base."""
+    trades = [_booking_row(t) for t in load_booked()["trades"]]
+    trades.sort(key=lambda x: (x["date"] or ""), reverse=True)
+    real = [t["realized_inr"] for t in trades]
+    best = max(trades, key=lambda x: x["realized_inr"], default=None)
+    worst = min(trades, key=lambda x: x["realized_inr"], default=None)
+    return {
+        "trades": trades,
+        "summary": {
+            "n": len(trades),
+            "realized_inr": round(sum(real), 2),
+            "wins": sum(1 for r in real if r > 0),
+            "losses": sum(1 for r in real if r < 0),
+            "win_rate": round(sum(1 for r in real if r > 0) / len(real) * 100, 1) if real else None,
+            "cost_inr": round(sum(t["buy_price"] * t["qty"] * t["fx_rate"] for t in trades), 2),
+            "best": {"symbol": best["symbol"], "realized_inr": best["realized_inr"]} if best else None,
+            "worst": {"symbol": worst["symbol"], "realized_inr": worst["realized_inr"]} if worst else None,
+        },
+        "disclaimer": DISCLAIMER,
+    }
+
+
+@app.post("/booked")
+def add_booking(b: BookingIn):
+    """Record a realized (booked) trade. Captures the live USDINR for US sells so
+    realized INR is locked at booking. Optionally reduces the matching holding."""
+    exch = b.exchange.strip().upper()
+    if exch not in ("NSE", "US"):
+        raise HTTPException(400, "exchange must be 'NSE' or 'US'.")
+    if b.qty <= 0 or b.buy_price <= 0 or b.sell_price <= 0:
+        raise HTTPException(400, "qty, buy_price and sell_price must be positive.")
+    sym = _normalize_holding_symbol(b.symbol, exch)
+    fx = float(fetch_usdinr()["rate"]) if exch == "US" else 1.0
+    trade = {
+        "id": uuid.uuid4().hex[:12],
+        "symbol": sym, "exchange": exch, "qty": b.qty,
+        "buy_price": b.buy_price, "sell_price": b.sell_price,
+        "date": b.date or pd.Timestamp.now().strftime("%Y-%m-%d"),
+        "fx_rate": round(fx, 4), "note": (b.note or "").strip()[:200],
+    }
+    doc = load_booked()
+    doc["trades"].append(trade)
+    save_booked(doc)
+    reduced = _reduce_holding(sym, exch, b.qty) if b.reduce_holding else None
+    return {"ok": True, "trade": _booking_row(trade), "reduced": reduced}
+
+
+@app.delete("/booked/{trade_id}")
+def remove_booking(trade_id: str):
+    doc = load_booked()
+    kept = [t for t in doc["trades"] if t.get("id") != trade_id]
+    if len(kept) == len(doc["trades"]):
+        raise HTTPException(404, f"No booked trade '{trade_id}'.")
+    doc["trades"] = kept
+    save_booked(doc)
+    return {"ok": True, "removed": trade_id}
 
 
 def _weekly_files():
