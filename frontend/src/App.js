@@ -80,7 +80,7 @@ function Navbar() {
     return <Link to={p} style={{ color: a ? "#00d4ff" : "#94a3b8", textDecoration: "none", fontWeight: 700, fontSize: 11, padding: "9px 18px", background: a ? "rgba(0,212,255,0.1)" : "rgba(30,41,59,0.4)", borderRadius: 6, border: `1px solid ${a ? "#00d4ff" : "#1e293b"}`, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>{l}</Link>;
   };
   return <div style={{ display: "flex", gap: 10, flexWrap: "wrap", background: "#0b0f19", padding: "12px 16px", borderRadius: 8, border: "1px solid #1e293b", marginBottom: 24 }}>
-    {link("/portfolio", "🧮 MY PORTFOLIO")}{link("/booked", "💰 PROFIT BOOKING")}{link("/", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}{link("/vcp", "🔬 VCP BREAKOUTS")}
+    {link("/portfolio", "🧮 MY PORTFOLIO")}{link("/booked", "💰 PROFIT BOOKING")}{link("/", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}{link("/top", "🏆 TOP PERFORMERS")}{link("/vcp", "🔬 VCP BREAKOUTS")}
   </div>;
 }
 
@@ -1275,6 +1275,100 @@ function BookedView() {
   );
 }
 
+// ============================================================ TOP PERFORMERS
+function TopPerformersView() {
+  const [data, setData] = useState(null);
+  const [week, setWeek] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(async (w) => {
+    setLoading(true); setError(null);
+    try {
+      const { data: res } = await axios.get(`${API_BASE}/top-performers${w ? `?week=${w}` : ""}`);
+      setData(res); setWeek(res.week_ending);
+    } catch (e) { setError(e?.response?.data?.detail ?? "Failed to load top performers (is the panel built?)."); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const rows = data?.rows ?? [];
+  const yes = (color, text) => <span style={{ background: `${color}22`, color, padding: "2px 8px", borderRadius: 3, fontSize: 9, fontWeight: 800, fontFamily: "JetBrains Mono" }}>{text}</span>;
+  const dash = <span style={{ color: "#475569" }}>–</span>;
+
+  return (
+    <div style={{ background: "#0b0f19", padding: 20, borderRadius: 10, border: "1px solid #1e293b" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div>
+          <h4 style={{ margin: "0 0 4px", fontSize: 13, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono", display: "flex", alignItems: "center", gap: 10 }}>🏆 PREVIOUS WEEK — TOP PERFORMERS {week && <ScoredChip date={week} />}</h4>
+          <p style={{ margin: 0, color: "#64748b", fontSize: 11 }}>Best weekly returns across the tradeable universe · whether each is in your portfolio / the breakout screen, and which momentum gates it passed.</p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {data?.available_weeks?.length > 0 && (
+            <select value={week ?? ""} onChange={(e) => load(e.target.value)} style={{ padding: "8px 11px", borderRadius: 6, border: "1px solid #1e293b", background: "#020617", color: "#f8fafc", fontFamily: "JetBrains Mono", fontSize: 12 }}>
+              {data.available_weeks.map((w) => <option key={w} value={w}>Week ending {w}</option>)}
+            </select>
+          )}
+          <button onClick={() => load(week)} disabled={loading} style={{ background: loading ? "#1e293b" : "#00d4ff", color: loading ? "#64748b" : "#020617", border: "none", padding: "9px 16px", borderRadius: 6, fontWeight: 800, cursor: loading ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "JetBrains Mono" }}>{loading ? "…" : "↻"}</button>
+        </div>
+      </div>
+
+      {error && <ErrorBanner message={error} />}
+
+      {data && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14, fontSize: 11, fontFamily: "JetBrains Mono" }}>
+          <span style={{ background: "rgba(148,163,184,0.1)", color: "#94a3b8", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>TOP {rows.length} of {data.n_universe} NAMES</span>
+          <span style={{ background: "rgba(0,227,150,0.1)", color: "#00e396", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>{data.summary?.in_portfolio ?? 0} IN YOUR PORTFOLIO</span>
+          <span style={{ background: "rgba(0,212,255,0.1)", color: "#00d4ff", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>{data.screen_available ? `${data.summary?.in_screen} CAUGHT BY BREAKOUT SCREEN` : "screen n/a for this week"}</span>
+        </div>
+      )}
+
+      <Disclaimer />
+
+      {loading && !data ? <p style={{ color: "#00d4ff", fontSize: 11, fontFamily: "JetBrains Mono", padding: "16px 0" }}>Ranking the universe from the weekly panel…</p> : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>
+            <thead><tr style={{ borderBottom: "1px solid #1e293b", color: "#64748b", fontSize: 10, letterSpacing: "0.05em" }}>
+              {["#", "SYMBOL", "WK RET %", "CLOSE ₹", "4W %", "VOL ×", "SCORE", "IN PORTFOLIO", "IN SCREEN", "CHECKS PASSED"].map((h, i) => (
+                <th key={i} style={{ padding: "0 10px 8px", textAlign: i >= 2 && i <= 6 ? "right" : "left", fontWeight: 600 }}>{h}</th>))}
+            </tr></thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={r.symbol} style={{ borderBottom: "1px solid #0f172a" }}>
+                  <td style={{ padding: "10px", color: "#64748b", fontWeight: 700 }}>{i + 1}</td>
+                  <td style={{ padding: "10px", fontWeight: 700, color: "#00d4ff" }}>{r.symbol}</td>
+                  <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: "#00e396" }}>+{r.week_return_pct}%</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }}>₹{r.close}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: pnlColor(r.ret_4w) }}>{r.ret_4w >= 0 ? "+" : ""}{r.ret_4w}%</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: "#f59e0b" }}>{r.vol_surge}×</td>
+                  <td style={{ padding: "10px", textAlign: "right", fontWeight: 700 }}>{r.score}</td>
+                  <td style={{ padding: "10px" }}>{r.in_portfolio ? yes("#00e396", "✓ HELD") : dash}</td>
+                  <td style={{ padding: "10px" }}>{r.in_screen == null ? <span style={{ color: "#475569" }}>—</span> : r.in_screen ? yes("#00d4ff", "✓ YES") : dash}</td>
+                  <td style={{ padding: "8px 10px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 10, fontWeight: 800, color: r.gates_passed === r.gates_total ? "#00e396" : r.gates_passed >= 7 ? "#f59e0b" : "#94a3b8" }}>{r.gates_passed}/{r.gates_total}</span>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, maxWidth: 300 }}>
+                        {r.gates.map((g, gi) => (
+                          <span key={gi} title={g.passed ? "passed" : "failed"} style={{ fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 3, fontFamily: "JetBrains Mono", background: g.passed ? "rgba(0,227,150,0.14)" : "transparent", color: g.passed ? "#00e396" : "#475569", border: g.passed ? "none" : "1px solid #1e293b" }}>{g.passed ? "✓" : "✕"} {g.label}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </td>
+                </tr>))}
+              {!rows.length && !loading && (
+                <tr><td colSpan={10} style={{ padding: "24px 10px", textAlign: "center", color: "#64748b", fontSize: 11 }}>No qualifying stocks for this week.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12, lineHeight: 1.6 }}>
+        Top {rows.length} by weekly return among tradeable names (price ≥ ₹20, median turnover ≥ ₹1cr/day, ≥40 weeks history) · <b style={{ color: "#64748b" }}>IN SCREEN</b> = also flagged by the weekly breakout screen that week · <b style={{ color: "#64748b" }}>CHECKS PASSED</b> = the momentum gates (green = passed) — a big weekly gain often fails "Not a spike", which is why raw top performers aren't all breakout-quality. Descriptive, not advice.
+      </div>
+    </div>
+  );
+}
+
 // ============================================================================
 export default function App() {
   return (
@@ -1291,6 +1385,7 @@ export default function App() {
           <Route path="/" element={<ProfileView />} />
           <Route path="/screener" element={<ScreenerView />} />
           <Route path="/breakouts" element={<WeeklyBreakoutsView />} />
+          <Route path="/top" element={<TopPerformersView />} />
           <Route path="/vcp" element={<VCPBreakoutsView />} />
         </Routes>
       </div>

@@ -1063,6 +1063,114 @@ def vcp_breakouts(week: str = Query(default=None),
     }
 
 
+_GATE_LABELS = {
+    "g_price_up": "Price up",
+    "g_vol_surge": "Vol surge ≥1.5×",
+    "g_close_strong": "Strong close",
+    "g_uptrend": "Uptrend 10w>30w",
+    "g_momentum": "4w & 12w up",
+    "g_near_high": "Near 52w high",
+    "g_rel_strength": "Beats market",
+    "g_not_spike": "Not a spike ≤40%",
+    "g_not_parabolic": "Not parabolic ≤100%",
+}
+
+
+class _GateCfg:
+    min_vol_surge = 1.5
+    min_close_strength = 0.6
+    max_below_high = 25.0
+    max_week_gain = 40.0
+    max_4w_gain = 100.0
+
+
+def _weekly_panel():
+    """Cached weekly-features frame for the recent window (reuses the scanner)."""
+    hit, v = CACHE.get("wkpanel", 3600)
+    if hit:
+        return v
+    import weekly_momentum as wm
+    if not os.path.exists(wm.PANEL):
+        raise HTTPException(404, "panel.parquet not found — run ingest_bhavcopy.py first.")
+    df = pd.read_parquet(wm.PANEL, columns=["date", "symbol", "open", "high",
+                                            "low", "close", "volume", "turnover"])
+    df = df[df["date"] >= df["date"].max() - pd.Timedelta(days=550)]
+    df = df[~df["symbol"].str.contains(wm.ETF_RE, na=False)]
+    wk = wm.add_features(wm.to_weekly(df))
+    wk["week_end_str"] = wk["week_end"].dt.strftime("%Y-%m-%d")
+    CACHE.set("wkpanel", wk)
+    return wk
+
+
+@app.get("/top-performers")
+def top_performers(week: str = Query(default=None), limit: int = Query(default=10, ge=1, le=50)):
+    """Previous week's best-performing tradeable stocks, cross-referenced with your
+    portfolio and the breakout screen, plus which momentum gates each one passed."""
+    import weekly_momentum as wm
+    wk = _weekly_panel()
+    info = wk.groupby("week_end_str", observed=True)["days"].max()
+    complete = sorted([d for d, mx in info.items() if mx >= 5], reverse=True)
+    if not complete:
+        raise HTTPException(404, "No complete weeks in the panel.")
+    chosen = week if (week and week in complete) else complete[0]
+
+    snap = wk[wk["week_end_str"] == chosen].copy()
+    snap = snap[(snap["close"] >= 20) & (snap["med_turnover_cr"] >= 1.0) & (snap["n_weeks"] >= 40)]
+    snap = snap.dropna(subset=["ret_1w", "ret_4w", "ret_12w", "ma_30w", "vol_surge", "high_52w"])
+    if snap.empty:
+        raise HTTPException(404, f"No qualifying stocks for week {chosen}.")
+    snap = wm.add_relative_strength(snap)
+    snap = wm.apply_gates(snap, _GateCfg())
+    snap = wm.score(snap)
+    top = snap.sort_values("ret_1w", ascending=False).head(limit)
+
+    try:
+        port = {str(p["symbol"]).upper().replace(".NS", "").replace(".BO", "")
+                for p in load_holdings()["positions"]}
+    except HTTPException:
+        port = set()
+    screen = None
+    for wend, path in _weekly_files():
+        if wend == chosen:
+            try:
+                screen = {str(s).strip().upper() for s in pd.read_csv(path)["Symbol"].tolist()}
+            except Exception:
+                screen = None
+            break
+
+    rows = []
+    for _, r in top.iterrows():
+        sym = str(r["symbol"]).replace(".NS", "").replace(".BO", "")
+        rows.append({
+            "symbol": sym,
+            "week_return_pct": round(float(r["ret_1w"]), 2),
+            "close": round(float(r["close"]), 2),
+            "score": round(float(r["score"]), 1),
+            "ret_4w": round(float(r["ret_4w"]), 2),
+            "vol_surge": round(float(r["vol_surge"]), 2),
+            "from_52w_high": round(float(r["pct_from_52w_high"]), 2),
+            "adtv": round(float(r["med_turnover_cr"]), 1),
+            "gates_passed": int(r["gates_passed"]),
+            "gates_total": len(_GATE_LABELS),
+            "gates": [{"label": lab, "passed": bool(r[k])} for k, lab in _GATE_LABELS.items()],
+            "in_portfolio": sym.upper() in port,
+            "in_screen": (sym.upper() in screen) if screen is not None else None,
+        })
+
+    return {
+        "week_ending": chosen,
+        "available_weeks": complete[:8],
+        "n_universe": int(len(snap)),
+        "screen_available": screen is not None,
+        "summary": {
+            "in_portfolio": sum(1 for x in rows if x["in_portfolio"]),
+            "in_screen": sum(1 for x in rows if x["in_screen"]) if screen is not None else None,
+        },
+        "rows": rows,
+        "disclaimer": DISCLAIMER,
+    }
+
+
 @app.get("/explain/{symbol}")
 def explain(symbol: str):
     sym = _validate_symbol(symbol)
