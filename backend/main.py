@@ -65,7 +65,7 @@ HOLDINGS_PATH = os.environ.get("HOLDINGS_PATH") or next(
 BOOKED_PATH = os.environ.get("BOOKED_PATH") or os.path.join(
     os.path.dirname(HOLDINGS_PATH), "booked.json")
 
-TTL_VIX, TTL_NIFTY, TTL_PX = 300, 300, 300
+TTL_VIX, TTL_PX = 300, 300
 FALLBACK_VIX = 16.0
 FALLBACK_USDINR = 86.0
 MIN_HISTORY_BARS = 65
@@ -229,20 +229,6 @@ def fetch_vix():
         log.warning("VIX fetch failed (%s)", exc)
         res = {"current": FALLBACK_VIX, "change_pct": 0.0, "is_fallback": True}
     CACHE.set("vix", res)
-    return res
-
-def fetch_nifty_3m():
-    hit, v = CACHE.get("nifty3m", TTL_NIFTY)
-    if hit: return v
-    try:
-        raw = _flatten(yf.download("^NSEI", period="3mo", progress=False, timeout=5, auto_adjust=False))
-        roi = (safe_scalar(raw["Close"].iloc[-1:]) - safe_scalar(raw["Close"].iloc[:1])) \
-              / safe_scalar(raw["Close"].iloc[:1]) * 100
-        res = (round(roi, 2), False)
-    except Exception as exc:
-        log.warning("Nifty 3m fetch failed (%s)", exc)
-        res = (5.85, True)
-    CACHE.set("nifty3m", res)
     return res
 
 
