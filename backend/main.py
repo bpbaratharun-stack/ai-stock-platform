@@ -16,6 +16,7 @@ import glob
 import json
 import uuid
 import logging
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -82,7 +83,8 @@ UNIVERSE_SCAN_LIMIT = 1500   # return the full ranked universe; the UI filters/s
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 _gemini = genai.Client(api_key=GEMINI_API_KEY) if (_GENAI_OK and GEMINI_API_KEY) else None
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-_explain_cache: dict = {}   # (symbol, scored_date) -> text
+_explain_cache: "OrderedDict" = OrderedDict()   # (symbol, scored_date) -> text (bounded LRU)
+_EXPLAIN_CACHE_MAX = 500
 GEMINI_SYSTEM = (
     "You explain technical/momentum factor data for an NSE stock screener to a "
     "non-expert, in plain English. STRICT RULES: never give buy/sell/hold advice; "
@@ -97,16 +99,25 @@ GEMINI_SYSTEM = (
 # Tiny cache
 # ---------------------------------------------------------------------------
 class _SimpleCache:
-    def __init__(self): self._s = {}
+    """TTL cache with a bounded LRU cap. Per-symbol/per-date keys (px:…, ohlc:…,
+    high:…) would otherwise accumulate forever; the cap evicts the least-recently
+    used entry once maxsize is exceeded."""
+    def __init__(self, maxsize=256):
+        self._s = OrderedDict()
+        self._max = maxsize
     def get(self, k, ttl):
         import time
         e = self._s.get(k)
         if e and time.time() - e[0] <= ttl:
+            self._s.move_to_end(k)
             return True, e[1]
         return False, None
     def set(self, k, v):
         import time
         self._s[k] = (time.time(), v)
+        self._s.move_to_end(k)
+        while len(self._s) > self._max:
+            self._s.popitem(last=False)
 
 CACHE = _SimpleCache()
 
@@ -136,8 +147,10 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["Return"] = df["Close"].pct_change().fillna(0)
     delta = df["Close"].diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    # Wilder's RSI: exponential smoothing with alpha = 1/period (not a simple
+    # rolling mean, which reacts too fast and disagrees with every charting tool).
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
     df["RSI"] = 100 - (100 / (1 + gain / (loss + 1e-9)))
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
@@ -350,7 +363,17 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title="NSE Factor Screener", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+
+# Explicit local origins only. allow_origins=["*"] together with
+# allow_credentials=True is an invalid/insecure CORS combination (the browser
+# rejects a wildcard when credentials are allowed), and an app-wide wildcard
+# would also collide with an OAuth-protected MCP mount. Override via
+# ALLOWED_ORIGINS (comma-separated) if the frontend runs on another port.
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173",
+).split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
 
@@ -393,7 +416,7 @@ def compute_factor_breakdown(df: pd.DataFrame) -> list[dict]:
     ]
 
 
-@app.get("/profile/{symbol}")
+@app.get("/profile/{symbol}", operation_id="profile")
 def profile(symbol: str):
     sym = _validate_symbol(symbol)
     vix_data = fetch_vix()
@@ -451,7 +474,7 @@ def profile(symbol: str):
     }
 
 
-def _rows(df, nifty_3m, is_fb):
+def _rows(df, bench_3m):
     out = []
     for _, r in df.iterrows():
         row = r.to_dict()
@@ -463,14 +486,14 @@ def _rows(df, nifty_3m, is_fb):
             "rsi": round(float(row["rsi"]), 1),
             "band": b["band"], "percentile": b["percentile"],
             "factor_trend": factor_trend(row),
-            "relative_strength": round(float(row.get("ret_3m", 0.0)) - nifty_3m, 2),
-            "nifty_benchmark_fallback": is_fb,
+            # 3-month excess return vs the universe-median 3m return (peer-relative).
+            "relative_strength": round(float(row.get("ret_3m", 0.0)) - bench_3m, 2),
         })
     out.sort(key=lambda x: x["percentile"], reverse=True)
     return out
 
 
-@app.get("/screener/{index_name}")
+@app.get("/screener/{index_name}", operation_id="screening")
 def screener(index_name: str, limit: int = Query(default=UNIVERSE_SCAN_LIMIT, ge=1, le=2000)):
     idx = index_name.strip().upper()
     if STORE is None or not STORE.ready:
@@ -480,8 +503,11 @@ def screener(index_name: str, limit: int = Query(default=UNIVERSE_SCAN_LIMIT, ge
     else: raise HTTPException(404, f"Unknown index '{index_name}'. Use a named index or 'UNIVERSE'.")
     if df.empty: raise HTTPException(404, f"No ranked symbols for '{idx}'.")
 
-    nifty_3m, is_fb = fetch_nifty_3m()
-    results = _rows(df, nifty_3m, is_fb)
+    # Peer-relative benchmark: the UNIVERSE median 3-month return, not Nifty 50.
+    # A large-cap index is the wrong yardstick for a broad, small/mid-cap-heavy
+    # universe — it manufactures apparent alpha out of pure size beta.
+    bench_3m = round(float(STORE.df["ret_3m"].median()), 2)
+    results = _rows(df, bench_3m)
     pcts = [r["percentile"] for r in results]
 
     return {
@@ -491,7 +517,8 @@ def screener(index_name: str, limit: int = Query(default=UNIVERSE_SCAN_LIMIT, ge
             "top_quintile": sum(1 for r in results if r["percentile"] >= 80),
             "median_percentile": round(float(np.median(pcts)), 1),
             "overbought_rsi": sum(1 for r in results if r["rsi"] > 70),
-            "nifty_3m_return": nifty_3m, "nifty_is_fallback": is_fb,
+            "benchmark": "universe_median_3m",
+            "universe_median_3m_return": bench_3m,
         },
         "results": results,
         "disclaimer": DISCLAIMER,
@@ -874,7 +901,7 @@ def _f(v, d=None):
         return d
 
 
-@app.get("/weekly-breakouts")
+@app.get("/weekly-breakouts", operation_id="weekly_breakouts")
 def weekly_breakouts(week: str = Query(default=None),
                      limit: int = Query(default=60, ge=1, le=300)):
     """This week's momentum-breakout screen, with each name's live performance
@@ -887,8 +914,8 @@ def weekly_breakouts(week: str = Query(default=None),
     path = dict(files)[chosen]
 
     try:
-        df = pd.read_csv(path).head(limit)
-    except Exception as exc:
+        df = pd.read_csv(path)          # FULL file: summary is computed over all rows,
+    except Exception as exc:            # only the returned `breakouts` list is display-limited.
         raise HTTPException(500, f"Could not read {os.path.basename(path)}: {exc}")
     if "Symbol" not in df.columns or "Close" not in df.columns:
         raise HTTPException(500, f"{os.path.basename(path)} missing expected columns.")
@@ -948,13 +975,16 @@ def weekly_breakouts(week: str = Query(default=None),
             "stale": px is None,
         })
 
+    # Summary is computed over the FULL file (all rows); the display list is sliced after.
     tracked = [x["since_pct"] for x in rows if x["since_pct"] is not None]
     states = [x["state"] for x in rows if x["state"]]
+    breakouts = rows[:limit]
     return {
         "week_ending": chosen,
         "available_weeks": weeks,
         "summary": {
             "n": len(rows),
+            "shown": len(breakouts),
             "avg_since_pct": round(sum(tracked) / len(tracked), 2) if tracked else None,
             "winners": sum(1 for x in tracked if x > 0),
             "losers": sum(1 for x in tracked if x < 0),
@@ -970,7 +1000,7 @@ def weekly_breakouts(week: str = Query(default=None),
             "note": "RULE % is marked to the latest close until the horizon elapses; "
                     "SCORE and GATES are as-of the breakout scan, not re-evaluated live.",
         },
-        "breakouts": rows,
+        "breakouts": breakouts,
         "disclaimer": DISCLAIMER,
     }
 
@@ -999,7 +1029,7 @@ VCP_VERDICT = (
 )
 
 
-@app.get("/vcp-breakouts")
+@app.get("/vcp-breakouts", operation_id="vcp_breakouts")
 def vcp_breakouts(week: str = Query(default=None),
                   limit: int = Query(default=60, ge=1, le=300)):
     """VCP / Weinstein Stage-2 weekly breakout screen (weekly_breakout_vcp.py),
@@ -1017,14 +1047,13 @@ def vcp_breakouts(week: str = Query(default=None),
         df_full = pd.read_csv(path)
     except Exception as exc:
         raise HTTPException(500, f"Could not read {os.path.basename(path)}: {exc}")
-    total_signals = len(df_full)               # summary counts the WHOLE file...
-    df = df_full.head(limit)                    # ...only the display is limited
-
+    total_signals = len(df_full)               # build rows over the WHOLE file so the
+                                                # summary is over all signals; slice later.
     rows = []
-    if "symbol" in df.columns and not df.empty:
-        symbols = [f"{str(s).strip().upper()}.NS" for s in df["symbol"].tolist()]
+    if "symbol" in df_full.columns and not df_full.empty:
+        symbols = [f"{str(s).strip().upper()}.NS" for s in df_full["symbol"].tolist()]
         prices = fetch_last_prices(symbols)
-        for _, r in df.iterrows():
+        for _, r in df_full.iterrows():
             sym = str(r["symbol"]).strip().upper()
             px = prices.get(f"{sym}.NS")
             bclose = _f(r.get("close"))
@@ -1048,17 +1077,18 @@ def vcp_breakouts(week: str = Query(default=None),
                 "stale": px is None,
             })
 
-    tracked = [x["since_pct"] for x in rows if x["since_pct"] is not None]
+    tracked = [x["since_pct"] for x in rows if x["since_pct"] is not None]  # over full file
+    breakouts = rows[:limit]
     return {
         "week_ending": chosen,
         "available_weeks": weeks,
         "summary": {
             "n": total_signals,
-            "shown": len(rows),
+            "shown": len(breakouts),
             "avg_since_pct": round(sum(tracked) / len(tracked), 2) if tracked else None,
         },
         "verdict": VCP_VERDICT,
-        "breakouts": rows,
+        "breakouts": breakouts,
         "disclaimer": DISCLAIMER,
     }
 
@@ -1171,7 +1201,7 @@ def top_performers(week: str = Query(default=None), limit: int = Query(default=1
     }
 
 
-@app.get("/explain/{symbol}")
+@app.get("/explain/{symbol}", operation_id="explain")
 def explain(symbol: str):
     sym = _validate_symbol(symbol)
     if _gemini is None:
@@ -1184,6 +1214,7 @@ def explain(symbol: str):
 
     key = (sym, STORE.scored_date)
     if key in _explain_cache:
+        _explain_cache.move_to_end(key)
         return {"symbol": sym, "explanation": _explain_cache[key], "cached": True}
 
     # Compute the same factor breakdown /profile shows, so Gemini cites real numbers.
@@ -1230,6 +1261,9 @@ def explain(symbol: str):
         raise HTTPException(502, "Explanation service unavailable.")
 
     _explain_cache[key] = text
+    _explain_cache.move_to_end(key)
+    while len(_explain_cache) > _EXPLAIN_CACHE_MAX:
+        _explain_cache.popitem(last=False)
     return {"symbol": sym, "explanation": text, "cached": False}
 
 
@@ -1245,3 +1279,34 @@ def health():
             "scored_date": STORE.scored_date if STORE else None,
             "gemini_enabled": _gemini is not None,
             "universe_size": 0 if (STORE is None or STORE.df is None) else len(STORE.df)}
+
+
+# ---------------------------------------------------------------------------
+# Local MCP server (read-only research tools for Claude Desktop)
+# ---------------------------------------------------------------------------
+# Mounts an MCP server onto this same FastAPI app. Only the READ endpoints named
+# below are exposed as tools (via explicit operation_ids); every state- or
+# cache-writing endpoint — /admin/reload, /portfolio/*, /booked/* — is excluded
+# by omission. Served on the streamable-HTTP transport at /mcp on the app, which
+# uvicorn binds to 127.0.0.1 only: LOCAL ONLY, no public / no SSE exposure.
+# Claude Desktop connects over stdio through a local bridge, e.g.:
+#   { "mcpServers": { "nse-screener": {
+#       "command": "npx",
+#       "args": ["-y", "mcp-remote", "http://127.0.0.1:8000/mcp"] } } }
+# Wrapped defensively: an MCP failure must never stop the core API from serving.
+MCP_READ_TOOLS = ["profile", "screening", "weekly_breakouts", "vcp_breakouts", "explain"]
+try:
+    from fastapi_mcp import FastApiMCP
+
+    _mcp = FastApiMCP(
+        app,
+        name="NSE Factor Screener (read-only)",
+        description="Read-only NSE research tools: single-asset factor profile + "
+                    "breakdown, universe factor screener, weekly momentum and VCP/"
+                    "Stage-2 breakout screens, and the AI factor explainer.",
+        include_operations=MCP_READ_TOOLS,
+    )
+    _mcp.mount_http()   # streamable HTTP at /mcp (local only; not the legacy SSE transport)
+    log.info("MCP mounted at /mcp — read-only tools: %s", MCP_READ_TOOLS)
+except Exception as exc:  # pragma: no cover - MCP is optional, core API must still boot
+    log.warning("MCP mount skipped (%s) — core API unaffected.", exc)

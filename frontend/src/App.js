@@ -323,7 +323,7 @@ function ScreenerView() {
     { key: "rsi", label: "RSI", numeric: true },
     { key: "percentile", label: "FACTOR %ILE", numeric: true },
     { key: "band", label: "POSITION", numeric: false, noSort: true },
-    { key: "relative_strength", label: "3M α vs NIFTY", numeric: true },
+    { key: "relative_strength", label: "3M α vs UNIV", numeric: true },
     { key: "factor_trend", label: "TREND", numeric: false, noSort: true },
   ];
 
@@ -813,6 +813,14 @@ function PortfolioView() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { if (unlocked) load(); }, [load, unlocked]);
+  // Re-fetch when the tab/window regains focus, so a sale booked elsewhere
+  // (or in another window) is reflected without a manual refresh.
+  useEffect(() => {
+    const refresh = () => { if (unlocked && document.visibilityState === "visible") load(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [load, unlocked]);
 
   const doUnlock = async () => {
     if ((await sha256(pin)) === pinHash) { setUnlocked(true); sessionStorage.setItem("pfUnlocked", "1"); setPin(""); setLockMsg(null); }
