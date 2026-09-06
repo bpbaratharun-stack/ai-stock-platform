@@ -909,7 +909,7 @@ def allocation():
     secmap = sectors_for([str(p["symbol"]).upper() for p in positions])
 
     total = 0.0
-    per, mkt, sec = [], {"NSE": 0.0, "US": 0.0}, {}
+    per, mkt, sec, sym_sector = [], {"NSE": 0.0, "US": 0.0}, {}, {}
     for p in positions:
         sym = str(p["symbol"]).upper()
         exch = str(p.get("exchange", "NSE")).upper()
@@ -923,8 +923,9 @@ def allocation():
         mkt["US" if is_us else "NSE"] += val
         s = secmap.get(sym) or "ETF / Other"
         sec[s] = sec.get(s, 0.0) + val
-        per.append({"symbol": sym.replace(".NS", "").replace(".BO", ""),
-                    "exchange": exch, "value_inr": val})
+        disp = sym.replace(".NS", "").replace(".BO", "")
+        sym_sector[disp] = s
+        per.append({"symbol": disp, "exchange": exch, "value_inr": val})
 
     t = total or 1.0
     per.sort(key=lambda x: x["value_inr"], reverse=True)
@@ -946,6 +947,7 @@ def allocation():
         "by_sector": sorted(({"name": k, "value_inr": round(v, 2), "pct": wpct(v)}
                              for k, v in sec.items()), key=lambda x: x["value_inr"], reverse=True),
         "by_holding": by_holding,
+        "sectors": sym_sector,
         "concentration": {
             "n_holdings": len(per),
             "n_sectors": len([k for k in sec if k != "ETF / Other"]),
@@ -958,6 +960,96 @@ def allocation():
         "fx": {**fx, "pair": "USDINR"},
         "disclaimer": DISCLAIMER,
     }
+
+
+TTL_HIST = 3600   # portfolio history reconstruction cached 1h
+
+
+@app.get("/portfolio-history")
+def portfolio_history(months: int = Query(default=6, ge=1, le=24)):
+    """Equity curve + risk. Reconstructs the daily value of your CURRENT holdings
+    at historical prices (one batched download) vs Nifty 50, and derives beta,
+    annualized volatility and max drawdown. NB: this values today's book back in
+    time — it is not a record of the positions you actually held then."""
+    hit, cached = CACHE.get(f"pfhist:{months}", TTL_HIST)
+    if hit:
+        return cached
+
+    doc = load_holdings()
+    positions = doc["positions"]
+    if not positions:
+        return {"curve": [], "risk": {}, "disclaimer": DISCLAIMER}
+
+    rate = float(fetch_usdinr()["rate"])
+    held = sorted({str(p["symbol"]).upper() for p in positions})
+    try:
+        raw = yf.download(held + ["^NSEI"], period=f"{months}mo", progress=False,
+                          timeout=40, group_by="ticker", auto_adjust=False)
+    except Exception as exc:
+        raise HTTPException(502, f"History fetch failed: {exc}")
+
+    closes = {}
+    for s in held + ["^NSEI"]:
+        try:
+            c = raw[s]["Close"].dropna()
+            if len(c):
+                closes[s] = c
+        except Exception:
+            pass
+    if "^NSEI" not in closes or len(closes) < 2:
+        raise HTTPException(502, "Insufficient history to build the curve.")
+
+    cdf = pd.DataFrame(closes).sort_index().ffill()
+    stock_cols = [s for s in held if s in cdf.columns]
+    # common window where every held name has data (so an IPO doesn't fake a jump)
+    common = cdf[stock_cols].dropna(how="any")
+    if len(common) < 5:
+        raise HTTPException(502, "Holdings lack a common price window (a very recent listing?).")
+
+    weights = {}
+    for p in positions:
+        s = str(p["symbol"]).upper()
+        if s in stock_cols:
+            fxm = rate if str(p.get("exchange", "NSE")).upper() == "US" else 1.0
+            weights[s] = weights.get(s, 0.0) + float(p.get("qty", 0)) * fxm
+    w = pd.Series(weights)
+    pv = (common[list(weights)] * w).sum(axis=1)
+    nifty = cdf["^NSEI"].reindex(pv.index).ffill().bfill()
+
+    pv0, nf0 = float(pv.iloc[0]), float(nifty.iloc[0])
+    curve = [{"date": d.strftime("%Y-%m-%d"),
+              "port_return_pct": round((float(v) / pv0 - 1) * 100, 2),
+              "nifty_return_pct": round((float(nifty.loc[d]) / nf0 - 1) * 100, 2)}
+             for d, v in pv.items()]
+
+    pr = pv.pct_change().dropna()
+    nr = nifty.pct_change().reindex(pr.index).dropna()
+    pr = pr.reindex(nr.index)
+    var_n = float(nr.var())
+    beta = round(float(pr.cov(nr) / var_n), 2) if var_n > 0 else None
+    vol = round(float(pr.std()) * (252 ** 0.5) * 100, 1)
+    dd = float((pv / pv.cummax() - 1).min()) * 100
+
+    result = {
+        "months": months,
+        "start": curve[0]["date"], "end": curve[-1]["date"],
+        "n_points": len(curve),
+        "n_priced": len(stock_cols), "n_holdings": len(positions),
+        "curve": curve,
+        "risk": {
+            "benchmark": "Nifty 50",
+            "beta": beta,
+            "volatility_annual_pct": vol,
+            "max_drawdown_pct": round(dd, 1),
+            "total_return_pct": curve[-1]["port_return_pct"],
+            "nifty_return_pct": curve[-1]["nifty_return_pct"],
+        },
+        "note": "Current holdings valued at historical prices (not your actual past "
+                "positions). Window is where every current holding had prices.",
+        "disclaimer": DISCLAIMER,
+    }
+    CACHE.set(f"pfhist:{months}", result)
+    return result
 
 
 def _reduce_holding(sym: str, exch: str, qty: float):

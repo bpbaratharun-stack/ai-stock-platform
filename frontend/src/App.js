@@ -805,6 +805,8 @@ function PortfolioView() {
   const [lockMsg, setLockMsg] = useState(null);
   const [divData, setDivData] = useState(null);
   const [allocData, setAllocData] = useState(null);
+  const [bookedData, setBookedData] = useState(null);
+  const [histData, setHistData] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -823,7 +825,15 @@ function PortfolioView() {
     try { const { data: res } = await axios.get(`${API_BASE}/allocation`); setAllocData(res); }
     catch { /* allocation is optional enrichment */ }
   }, []);
-  useEffect(() => { if (unlocked) { load(); loadDiv(); loadAlloc(); } }, [load, loadDiv, loadAlloc, unlocked]);
+  const loadBooked = useCallback(async () => {
+    try { const { data: res } = await axios.get(`${API_BASE}/booked`); setBookedData(res); }
+    catch { /* booked ledger is optional enrichment */ }
+  }, []);
+  const loadHist = useCallback(async () => {
+    try { const { data: res } = await axios.get(`${API_BASE}/portfolio-history?months=6`); setHistData(res); }
+    catch { /* equity curve is optional enrichment */ }
+  }, []);
+  useEffect(() => { if (unlocked) { load(); loadDiv(); loadAlloc(); loadBooked(); loadHist(); } }, [load, loadDiv, loadAlloc, loadBooked, loadHist, unlocked]);
   // Re-fetch when the tab/window regains focus, so a sale booked elsewhere
   // (or in another window) is reflected without a manual refresh.
   useEffect(() => {
@@ -854,13 +864,15 @@ function PortfolioView() {
 
   const view = useMemo(() => {
     if (!data?.holdings) return [];
+    const sm = allocData?.sectors ?? {};
+    const rows = data.holdings.map((h) => ({ ...h, sector: sm[h.symbol] || "—" }));
     const dir = sortDir === "asc" ? 1 : -1;
-    return [...data.holdings].sort((a, b) => {
+    return rows.sort((a, b) => {
       const va = a[sortKey], vb = b[sortKey];
       if (typeof va === "string") return va.localeCompare(vb) * dir;
       return (va - vb) * dir;
     });
-  }, [data, sortKey, sortDir]);
+  }, [data, allocData, sortKey, sortDir]);
 
   const setSort = (key, numeric) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -923,9 +935,19 @@ function PortfolioView() {
     (divData?.holdings ?? []).forEach((r) => { m[r.symbol] = r; });
     return m;
   }, [divData]);
+  const totalReturn = useMemo(() => {
+    if (!s) return null;
+    const unreal = s.pnl_inr ?? 0;
+    const realized = bookedData?.summary?.realized_inr ?? 0;
+    const divv = divData?.summary?.annual_income_inr ?? 0;
+    const total = unreal + realized + divv;
+    return { unreal, realized, divv, total, pct: s.invested_inr ? (total / s.invested_inr) * 100 : 0,
+             hasBooked: !!bookedData, hasDiv: !!divData };
+  }, [s, bookedData, divData]);
   const COLS = [
     { key: "symbol", label: "SYMBOL", numeric: false },
     { key: "exchange", label: "MKT", numeric: false },
+    { key: "sector", label: "SECTOR", numeric: false },
     { key: "qty", label: "QTY", numeric: true },
     { key: "avg_price", label: "AVG BUY", numeric: true },
     { key: "last_price", label: "LTP", numeric: true },
@@ -1032,6 +1054,23 @@ function PortfolioView() {
           <StatCard label="EST. ANNUAL DIV" value={divData?.summary ? base(divData.summary.annual_income_inr) : "…"} accent="#2dd4bf" badge={divData?.summary ? `${divData.summary.portfolio_yield_pct}% yld` : null} />
         </div>
 
+        {totalReturn && (
+          <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 9, color: "#64748b", fontWeight: 700, letterSpacing: "0.05em" }}>TOTAL RETURN</div>
+              <div style={{ fontSize: 20, fontWeight: 800, fontFamily: "JetBrains Mono", color: pnlColor(totalReturn.total) }}>
+                {baseSigned(totalReturn.total)} <span style={{ fontSize: 13 }}>{totalReturn.pct >= 0 ? "▲" : "▼"}{Math.abs(totalReturn.pct).toFixed(2)}%</span>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontFamily: "JetBrains Mono", fontSize: 11, color: "#64748b" }}>
+              <span>UNREALIZED <b style={{ color: pnlColor(totalReturn.unreal) }}>{baseSigned(totalReturn.unreal)}</b></span>
+              <span>+ REALIZED <b style={{ color: pnlColor(totalReturn.realized) }}>{baseSigned(totalReturn.realized)}</b></span>
+              <span>+ DIVIDENDS (TTM) <b style={{ color: "#2dd4bf" }}>{baseSigned(totalReturn.divv)}</b></span>
+            </div>
+            <span style={{ marginLeft: "auto", fontSize: 9, color: "#475569", fontFamily: "JetBrains Mono", maxWidth: 220 }}>Unrealized P&L + realized (booking ledger) + trailing-12m dividends.</span>
+          </div>
+        )}
+
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16, fontSize: 11, fontFamily: "JetBrains Mono" }}>
           <span style={{ background: "rgba(0,212,255,0.1)", color: "#00d4ff", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>NSE {data.allocation?.NSE ?? 0}%</span>
           <span style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>US {data.allocation?.US ?? 0}%</span>
@@ -1090,6 +1129,7 @@ function PortfolioView() {
                   <td style={{ padding: "11px 10px" }}>
                     <span style={{ background: h.exchange === "US" ? "rgba(245,158,11,0.12)" : "rgba(0,212,255,0.1)", color: h.exchange === "US" ? "#f59e0b" : "#00d4ff", padding: "2px 7px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{h.exchange}</span>
                   </td>
+                  <td style={{ padding: "11px 10px", color: "#94a3b8", fontSize: 11, whiteSpace: "nowrap" }}>{h.sector}</td>
                   <td style={{ padding: "11px 10px", textAlign: "right" }}>
                     {editing
                       ? <input value={editVals.qty} onChange={(e) => setEditVals((v) => ({ ...v, qty: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(h); if (e.key === "Escape") cancelEdit(); }} inputMode="decimal" autoFocus style={cellEdit} />
@@ -1162,6 +1202,20 @@ function PortfolioView() {
                 <StatCard label="LARGEST POSITION" value={c.largest ? `${c.largest.symbol} ${c.largest.pct}%` : "—"} accent="#f59e0b" />
                 <StatCard label="DIVERSIFICATION" value={c.hhi_label} accent={hhiColor} badge={`HHI ${c.hhi}`} />
               </div>
+              {(() => {
+                const nameB = allocData.by_holding.filter((h) => !h.symbol.startsWith("Others") && h.pct > 10);
+                const secB = allocData.by_sector.filter((x) => x.name !== "ETF / Other" && x.pct > 30);
+                const any = nameB.length || secB.length;
+                const chip = (t, k) => <span key={k} style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", padding: "3px 9px", borderRadius: 4, fontWeight: 700 }}>{t}</span>;
+                return (
+                  <div style={{ marginBottom: 16, fontSize: 11, fontFamily: "JetBrains Mono", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <span style={{ color: any ? "#f59e0b" : "#00e396", fontWeight: 800 }}>{any ? "⚠ CONCENTRATION" : "✓ NO CONCENTRATION BREACHES"}</span>
+                    {nameB.map((h) => chip(`${h.symbol} ${h.pct}% (name >10%)`, h.symbol))}
+                    {secB.map((x) => chip(`${x.name} ${x.pct}% (sector >30%)`, x.name))}
+                    {!any && <span style={{ color: "#64748b" }}>largest name {c.largest?.pct}% · largest sector {allocData.by_sector[0]?.pct}%</span>}
+                  </div>
+                );
+              })()}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14 }}>
                   <div style={{ fontSize: 10, color: "#64748b", fontFamily: "JetBrains Mono", marginBottom: 6, letterSpacing: "0.05em" }}>BY SECTOR</div>
@@ -1174,6 +1228,37 @@ function PortfolioView() {
               </div>
               <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 10 }}>
                 Weighted by live market value ({disp}). Sectors via yfinance (ETFs shown as "ETF / Other"). HHI = Herfindahl index (Σ weight²): &lt;1500 diversified · 1500–2500 moderate · &gt;2500 concentrated.
+              </div>
+            </div>
+          );
+        })()}
+
+        {histData?.curve?.length > 1 && (() => {
+          const r = histData.risk;
+          const pts = (key) => histData.curve.map((p) => [new Date(p.date).getTime(), p[key]]);
+          const opts = {
+            chart: { type: "line", toolbar: { show: false }, background: "transparent", animations: { enabled: false } },
+            theme: { mode: "dark" }, stroke: { width: [2, 1.5], curve: "smooth" }, colors: ["#00d4ff", "#94a3b8"],
+            xaxis: { type: "datetime", labels: { style: { colors: "#64748b", fontFamily: "JetBrains Mono", fontSize: "10px" } }, axisBorder: { show: false }, axisTicks: { show: false } },
+            yaxis: { labels: { style: { colors: "#64748b", fontFamily: "JetBrains Mono", fontSize: "10px" }, formatter: (v) => v.toFixed(0) + "%" } },
+            grid: { borderColor: "#1e293b" }, legend: { position: "top", horizontalAlign: "left", labels: { colors: "#94a3b8" }, fontFamily: "JetBrains Mono", fontSize: "11px" },
+            tooltip: { theme: "dark", x: { format: "dd MMM" }, y: { formatter: (v) => v.toFixed(2) + "%" } },
+          };
+          const series = [{ name: "Portfolio", data: pts("port_return_pct") }, { name: "Nifty 50", data: pts("nifty_return_pct") }];
+          return (
+            <div style={{ marginTop: 22 }}>
+              <div style={{ fontSize: 12, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono", marginBottom: 12, letterSpacing: "0.05em" }}>📈 PERFORMANCE &amp; RISK <span style={{ color: "#475569", fontWeight: 400, fontSize: 10 }}>· {histData.start} → {histData.end}</span></div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 14 }}>
+                <StatCard label="RETURN vs NIFTY" value={`${r.total_return_pct >= 0 ? "+" : ""}${r.total_return_pct}%`} accent={pnlColor(r.total_return_pct)} badge={`Nifty ${r.nifty_return_pct >= 0 ? "+" : ""}${r.nifty_return_pct}%`} />
+                <StatCard label="BETA vs NIFTY" value={r.beta ?? "—"} accent="#38bdf8" />
+                <StatCard label="VOLATILITY (ANN.)" value={`${r.volatility_annual_pct}%`} accent="#f59e0b" />
+                <StatCard label="MAX DRAWDOWN" value={`${r.max_drawdown_pct}%`} accent="#ff4d4d" />
+              </div>
+              <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14 }}>
+                <Chart options={opts} series={series} type="line" height={260} />
+              </div>
+              <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 10 }}>
+                {histData.note} · {histData.n_priced}/{histData.n_holdings} holdings priced over the window · beta/vol/drawdown from daily returns vs Nifty 50.
               </div>
             </div>
           );
