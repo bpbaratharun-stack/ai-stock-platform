@@ -807,6 +807,8 @@ function PortfolioView() {
   const [allocData, setAllocData] = useState(null);
   const [bookedData, setBookedData] = useState(null);
   const [histData, setHistData] = useState(null);
+  const [highlight, setHighlight] = useState(null);   // {kind:"sector"|"holding", value}
+  const tableRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -944,6 +946,21 @@ function PortfolioView() {
     return { unreal, realized, divv, total, pct: s.invested_inr ? (total / s.invested_inr) * 100 : 0,
              hasBooked: !!bookedData, hasDiv: !!divData };
   }, [s, bookedData, divData]);
+
+  // Donut → table highlighting
+  const secBySym = useMemo(() => allocData?.sectors ?? {}, [allocData]);
+  const top10Set = useMemo(() => new Set((allocData?.by_holding ?? []).filter((h) => !h.symbol.startsWith("Others")).map((h) => h.symbol)), [allocData]);
+  const toggleHighlight = (kind, value) => {
+    setHighlight((cur) => (cur && cur.kind === kind && cur.value === value) ? null : { kind, value });
+    setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+  };
+  const isHighlighted = (h) => {
+    if (!highlight) return null;
+    if (highlight.kind === "sector") return (secBySym[h.symbol] || "ETF / Other") === highlight.value;
+    if (highlight.value.startsWith("Others")) return !top10Set.has(h.symbol);
+    return h.symbol === highlight.value;
+  };
+
   const COLS = [
     { key: "symbol", label: "SYMBOL", numeric: false },
     { key: "exchange", label: "MKT", numeric: false },
@@ -1106,7 +1123,15 @@ function PortfolioView() {
           ))}
         </div>
 
-        <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14, overflowX: "auto" }}>
+        {highlight && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 11, fontFamily: "JetBrains Mono", flexWrap: "wrap" }}>
+            <span style={{ color: "#64748b" }}>Highlighting</span>
+            <span style={{ background: "rgba(0,212,255,0.12)", color: "#00d4ff", padding: "3px 10px", borderRadius: 4, fontWeight: 700 }}>{highlight.value}</span>
+            <button onClick={() => setHighlight(null)} style={{ background: "transparent", border: "1px solid #1e293b", color: "#94a3b8", cursor: "pointer", fontSize: 10, fontFamily: "JetBrains Mono", padding: "3px 9px", borderRadius: 4 }}>✕ clear</button>
+            <span style={{ color: "#475569", fontSize: 10 }}>click a donut slice below to filter · click it again to clear</span>
+          </div>
+        )}
+        <div ref={tableRef} style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14, overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>
             <thead><tr style={{ borderBottom: "1px solid #1e293b" }}>
               {COLS.map((c) => (
@@ -1123,8 +1148,9 @@ function PortfolioView() {
                 const editing = editKey === `${h.symbol}|${h.exchange}`;
                 const cellEdit = { ...finp, width: 74, textAlign: "right", padding: "5px 8px", fontSize: 11 };
                 const iconBtn = { background: "transparent", border: "none", cursor: "pointer", fontSize: 13, fontFamily: "JetBrains Mono" };
+                const hl = isHighlighted(h);
                 return (
-                <tr key={h.symbol + h.exchange} style={{ borderBottom: "1px solid #0f172a", background: editing ? "rgba(0,212,255,0.04)" : "transparent" }}>
+                <tr key={h.symbol + h.exchange} style={{ borderBottom: "1px solid #0f172a", background: hl ? "rgba(0,212,255,0.12)" : editing ? "rgba(0,212,255,0.04)" : "transparent", opacity: hl === false ? 0.28 : 1, transition: "opacity .15s" }}>
                   <td style={{ padding: "11px 10px", fontWeight: 700, color: "#00d4ff" }}>{h.symbol}</td>
                   <td style={{ padding: "11px 10px" }}>
                     <span style={{ background: h.exchange === "US" ? "rgba(245,158,11,0.12)" : "rgba(0,212,255,0.1)", color: h.exchange === "US" ? "#f59e0b" : "#00d4ff", padding: "2px 7px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{h.exchange}</span>
@@ -1179,9 +1205,10 @@ function PortfolioView() {
         {allocData?.concentration && (() => {
           const c = allocData.concentration;
           const PIE = ["#00d4ff", "#00e396", "#f59e0b", "#a855f7", "#ff4d4d", "#2dd4bf", "#38bdf8", "#f472b6", "#facc15", "#94a3b8", "#fb923c"];
-          const donut = (rows, key) => ({
+          const donut = (rows, key, onSelect) => ({
             options: {
-              chart: { type: "donut", background: "transparent", animations: { enabled: false } },
+              chart: { type: "donut", background: "transparent", animations: { enabled: false },
+                events: { dataPointSelection: (e, ctx, cfg) => onSelect(rows[cfg.dataPointIndex]) } },
               theme: { mode: "dark" }, labels: rows.map((r) => r[key]), colors: PIE,
               dataLabels: { enabled: true, formatter: (v) => (v >= 6 ? Math.round(v) + "%" : ""), style: { fontSize: "9px", fontFamily: "JetBrains Mono", fontWeight: 700 }, dropShadow: { enabled: false } },
               legend: { position: "bottom", fontSize: "9px", fontFamily: "JetBrains Mono", labels: { colors: "#94a3b8" }, itemMargin: { horizontal: 5, vertical: 1 }, markers: { width: 8, height: 8 } },
@@ -1190,8 +1217,8 @@ function PortfolioView() {
             },
             series: rows.map((r) => r.pct),
           });
-          const sec = donut(allocData.by_sector, "name");
-          const hold = donut(allocData.by_holding, "symbol");
+          const sec = donut(allocData.by_sector, "name", (row) => toggleHighlight("sector", row.name));
+          const hold = donut(allocData.by_holding, "symbol", (row) => toggleHighlight("holding", row.symbol));
           const hhiColor = c.hhi_label === "Concentrated" ? "#ff4d4d" : c.hhi_label === "Moderate" ? "#f59e0b" : "#00e396";
           return (
             <div style={{ marginTop: 22 }}>

@@ -914,7 +914,7 @@ def allocation():
     secmap = sectors_for([str(p["symbol"]).upper() for p in positions])
 
     total = 0.0
-    per, mkt, sec, sym_industry = [], {"NSE": 0.0, "US": 0.0}, {}, {}
+    per, mkt, sec, sym_industry, sym_sector = [], {"NSE": 0.0, "US": 0.0}, {}, {}, {}
     for p in positions:
         sym = str(p["symbol"]).upper()
         exch = str(p.get("exchange", "NSE")).upper()
@@ -932,6 +932,7 @@ def allocation():
         sec[sector] = sec.get(sector, 0.0) + val
         disp = sym.replace(".NS", "").replace(".BO", "")
         sym_industry[disp] = industry
+        sym_sector[disp] = sector
         per.append({"symbol": disp, "exchange": exch, "value_inr": val})
 
     t = total or 1.0
@@ -955,6 +956,7 @@ def allocation():
                              for k, v in sec.items()), key=lambda x: x["value_inr"], reverse=True),
         "by_holding": by_holding,
         "industries": sym_industry,
+        "sectors": sym_sector,
         "concentration": {
             "n_holdings": len(per),
             "n_sectors": len([k for k in sec if k != "ETF / Other"]),
