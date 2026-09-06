@@ -1065,16 +1065,19 @@ TTL_DMA = 900   # DMA alerts cached 15 min
 
 
 @app.get("/alerts")
-def alerts(dma: int = Query(default=50, ge=5, le=200)):
-    """Holdings whose latest close is BELOW their N-day moving average (default 50
-    DMA) — a common trend-break / sell signal. 'days_below' counts consecutive
-    sessions under the average. Descriptive, not advice."""
+def alerts(dma: int = Query(default=50, ge=5, le=200),
+           confirm: int = Query(default=2, ge=1, le=10)):
+    """Holdings whose latest close is BELOW their N-day moving average (default 50).
+    A 'confirmed' sell needs `confirm` consecutive closes below (default 2) — a
+    single close below is mostly whipsaw (see dma_exit_backtest.py). 'days_below'
+    is the run of consecutive sessions under. Descriptive, not advice."""
     doc = load_holdings()
     positions = doc["positions"]
     if not positions:
-        return {"dma": dma, "below": [], "summary": {"n_below": 0, "n_holdings": 0}, "disclaimer": DISCLAIMER}
+        return {"dma": dma, "confirm": confirm, "below": [],
+                "summary": {"n_below": 0, "n_confirmed": 0, "n_holdings": 0}, "disclaimer": DISCLAIMER}
 
-    hit, cached = CACHE.get(f"alerts:{dma}", TTL_DMA)
+    hit, cached = CACHE.get(f"alerts:{dma}:{confirm}", TTL_DMA)
     if hit:
         return cached
 
@@ -1116,24 +1119,27 @@ def alerts(dma: int = Query(default=50, ge=5, le=200)):
             "exchange": exch,
             "last_price": round(last, 2), "dma": round(d50, 2),
             "pct_from_dma": round((last / d50 - 1) * 100, 2),
-            "days_below": db, "just_crossed": db <= 2,
+            "days_below": db, "confirmed": db >= confirm, "fresh": db == confirm,
             "value_inr": round(float(p.get("qty", 0)) * last * fxm, 2),
         })
 
     below.sort(key=lambda x: x["pct_from_dma"])   # deepest below first
+    conf = [b for b in below if b["confirmed"]]
     result = {
-        "dma": dma,
+        "dma": dma, "confirm": confirm,
         "below": below,
         "summary": {
-            "n_below": len(below), "n_holdings": len(positions), "n_priced": n_priced,
-            "value_below_inr": round(sum(b["value_inr"] for b in below), 2),
-            "just_crossed": sum(1 for b in below if b["just_crossed"]),
+            "n_below": len(below), "n_confirmed": len(conf),
+            "n_holdings": len(positions), "n_priced": n_priced,
+            "value_confirmed_inr": round(sum(b["value_inr"] for b in conf), 2),
+            "fresh": sum(1 for b in conf if b["fresh"]),
         },
-        "note": f"Latest close under the {dma}-day moving average; days_below = consecutive "
-                f"sessions under it. A trend-break/sell flag — descriptive, not advice.",
+        "note": f"'confirmed' sell = {confirm}+ consecutive closes below the {dma}-day average "
+                f"(a single close below is mostly whipsaw). days_below = the run of sessions "
+                f"under it. Descriptive, not advice.",
         "disclaimer": DISCLAIMER,
     }
-    CACHE.set(f"alerts:{dma}", result)
+    CACHE.set(f"alerts:{dma}:{confirm}", result)
     return result
 
 

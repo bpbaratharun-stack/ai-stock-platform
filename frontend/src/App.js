@@ -1098,22 +1098,32 @@ function PortfolioView() {
           </div>
         )}
 
-        {alertsData?.summary?.n_below > 0 && (
-          <div style={{ background: "rgba(255,77,77,0.07)", border: "1px solid rgba(255,77,77,0.4)", borderRadius: 10, padding: "12px 16px", marginBottom: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: "#ff4d4d", fontFamily: "JetBrains Mono" }}>⚠ 50 DMA SELL SIGNALS</span>
-              <span style={{ fontSize: 11, color: "#94a3b8", fontFamily: "JetBrains Mono" }}>{alertsData.summary.n_below} of {alertsData.summary.n_priced} below their 50-day average · {base(alertsData.summary.value_below_inr)} at risk{alertsData.summary.just_crossed ? ` · ${alertsData.summary.just_crossed} just crossed ★` : ""}</span>
+        {alertsData?.summary?.n_below > 0 && (() => {
+          const su = alertsData.summary;
+          const conf = alertsData.below.filter((a) => a.confirmed);
+          const watch = su.n_below - su.n_confirmed;
+          return (
+            <div style={{ background: "rgba(255,77,77,0.07)", border: "1px solid rgba(255,77,77,0.4)", borderRadius: 10, padding: "12px 16px", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: "#ff4d4d", fontFamily: "JetBrains Mono" }}>⚠ 50 DMA SELL SIGNALS</span>
+                <span style={{ fontSize: 11, color: "#94a3b8", fontFamily: "JetBrains Mono" }}>
+                  <b style={{ color: "#ff4d4d" }}>{su.n_confirmed} confirmed</b> ({alertsData.confirm}+ closes below) · {base(su.value_confirmed_inr)} at risk{su.fresh ? ` · ${su.fresh} fresh ★` : ""}{watch > 0 ? ` · ${watch} just 1 day below (watch)` : ""}
+                </span>
+              </div>
+              {conf.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                  {conf.slice(0, 14).map((a) => (
+                    <span key={a.symbol} onClick={() => { setHighlight({ kind: "holding", value: a.symbol }); setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60); }}
+                      title={`${a.pct_from_dma}% below 50 DMA (₹${a.dma}) · ${a.days_below} consecutive closes below`}
+                      style={{ cursor: "pointer", background: a.fresh ? "rgba(245,158,11,0.15)" : "rgba(255,77,77,0.12)", color: a.fresh ? "#f59e0b" : "#ff4d4d", padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: "JetBrains Mono" }}>{a.symbol} {a.pct_from_dma}%{a.fresh ? " ★" : ""}</span>
+                  ))}
+                  {conf.length > 14 && <span style={{ color: "#64748b", fontSize: 10, fontFamily: "JetBrains Mono", alignSelf: "center" }}>+{conf.length - 14} more · see ▼50D in the table</span>}
+                </div>
+              )}
+              <div style={{ fontSize: 9, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 8 }}>★ = fresh (just reached {alertsData.confirm} closes below). A single close below is mostly whipsaw — backtested no meaningful edge. Descriptive, not advice.</div>
             </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-              {alertsData.below.slice(0, 12).map((a) => (
-                <span key={a.symbol} onClick={() => { setHighlight({ kind: "holding", value: a.symbol }); setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60); }}
-                  title={`${a.pct_from_dma}% below 50 DMA (₹${a.dma}) · ${a.days_below} sessions below`}
-                  style={{ cursor: "pointer", background: a.just_crossed ? "rgba(245,158,11,0.15)" : "rgba(255,77,77,0.12)", color: a.just_crossed ? "#f59e0b" : "#ff4d4d", padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: "JetBrains Mono" }}>{a.symbol} {a.pct_from_dma}%{a.just_crossed ? " ★" : ""}</span>
-              ))}
-              {alertsData.below.length > 12 && <span style={{ color: "#64748b", fontSize: 10, fontFamily: "JetBrains Mono", alignSelf: "center" }}>+{alertsData.below.length - 12} more · see ▼50D in the table</span>}
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16, fontSize: 11, fontFamily: "JetBrains Mono" }}>
           <span style={{ background: "rgba(0,212,255,0.1)", color: "#00d4ff", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>NSE {data.allocation?.NSE ?? 0}%</span>
@@ -1180,7 +1190,13 @@ function PortfolioView() {
                 <tr key={h.symbol + h.exchange} style={{ borderBottom: "1px solid #0f172a", background: hl ? "rgba(0,212,255,0.12)" : editing ? "rgba(0,212,255,0.04)" : "transparent", opacity: hl === false ? 0.28 : 1, transition: "opacity .15s" }}>
                   <td style={{ padding: "11px 10px", fontWeight: 700, color: "#00d4ff", whiteSpace: "nowrap" }}>
                     {h.symbol}
-                    {alertsBySym[h.symbol] && <span title={`${alertsBySym[h.symbol].pct_from_dma}% below 50 DMA (₹${alertsBySym[h.symbol].dma}) · ${alertsBySym[h.symbol].days_below} sessions below`} style={{ marginLeft: 6, fontSize: 8, fontWeight: 800, color: alertsBySym[h.symbol].just_crossed ? "#f59e0b" : "#ff4d4d", background: alertsBySym[h.symbol].just_crossed ? "rgba(245,158,11,0.14)" : "rgba(255,77,77,0.12)", padding: "1px 5px", borderRadius: 3 }}>▼50D</span>}
+                    {(() => {
+                      const a = alertsBySym[h.symbol];
+                      if (!a) return null;
+                      return a.confirmed
+                        ? <span title={`${a.pct_from_dma}% below 50 DMA (₹${a.dma}) · ${a.days_below} consecutive closes below${a.fresh ? " · fresh" : ""}`} style={{ marginLeft: 6, fontSize: 8, fontWeight: 800, color: a.fresh ? "#f59e0b" : "#ff4d4d", background: a.fresh ? "rgba(245,158,11,0.14)" : "rgba(255,77,77,0.12)", padding: "1px 5px", borderRadius: 3 }}>▼50D{a.fresh ? "★" : ""}</span>
+                        : <span title={`1 close below 50 DMA (₹${a.dma}) — watch, not yet confirmed`} style={{ marginLeft: 6, fontSize: 8, fontWeight: 700, color: "#64748b", border: "1px solid #1e293b", padding: "1px 4px", borderRadius: 3 }}>50D?</span>;
+                    })()}
                   </td>
                   <td style={{ padding: "11px 10px" }}>
                     <span style={{ background: h.exchange === "US" ? "rgba(245,158,11,0.12)" : "rgba(0,212,255,0.1)", color: h.exchange === "US" ? "#f59e0b" : "#00d4ff", padding: "2px 7px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{h.exchange}</span>
