@@ -11,6 +11,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import axios from "axios";
 import Chart from "react-apexcharts";
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
+import PortfolioV2 from "./PortfolioV2";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -80,7 +81,7 @@ function Navbar() {
     return <Link to={p} style={{ color: a ? "#00d4ff" : "#94a3b8", textDecoration: "none", fontWeight: 700, fontSize: 11, padding: "9px 18px", background: a ? "rgba(0,212,255,0.1)" : "rgba(30,41,59,0.4)", borderRadius: 6, border: `1px solid ${a ? "#00d4ff" : "#1e293b"}`, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>{l}</Link>;
   };
   return <div style={{ display: "flex", gap: 10, flexWrap: "wrap", background: "#0b0f19", padding: "12px 16px", borderRadius: 8, border: "1px solid #1e293b", marginBottom: 24 }}>
-    {link("/portfolio", "🧮 MY PORTFOLIO")}{link("/booked", "💰 PROFIT BOOKING")}{link("/", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}{link("/top", "🏆 TOP PERFORMERS")}{link("/vcp", "🔬 VCP BREAKOUTS")}
+    {link("/v2", "✨ NEW LOOK")}{link("/portfolio", "🧮 MY PORTFOLIO")}{link("/booked", "💰 PROFIT BOOKING")}{link("/", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}{link("/top", "🏆 TOP PERFORMERS")}{link("/vcp", "🔬 VCP BREAKOUTS")}
   </div>;
 }
 
@@ -1604,25 +1605,31 @@ function TopPerformersView() {
 }
 
 // ============================================================================
-export default function App() {
+function Shell() {
+  const loc = useLocation();
+  // The reskinned Portfolio (/v2) is a full-page light view — render it outside
+  // the dark research shell so it isn't framed by the terminal chrome.
+  if (loc.pathname === "/v2") return <PortfolioV2 />;
   return (
-    <Router>
-      <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: 24, fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box" }}>
-        <div style={{ marginBottom: 20 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0, fontFamily: "JetBrains Mono", color: "#f8fafc" }}>NSE FACTOR SCREENER</h1>
-          <p style={{ color: "#334155", fontSize: 11, margin: "3px 0 0", fontFamily: "JetBrains Mono" }}>Research & screening terminal · descriptive factor rankings · not a signal engine · v5.3.0</p>
-        </div>
-        <Navbar />
-        <Routes>
-          <Route path="/portfolio" element={<PortfolioView />} />
-          <Route path="/booked" element={<BookedView />} />
-          <Route path="/" element={<ProfileView />} />
-          <Route path="/screener" element={<ScreenerView />} />
-          <Route path="/breakouts" element={<WeeklyBreakoutsView />} />
-          <Route path="/top" element={<TopPerformersView />} />
-          <Route path="/vcp" element={<VCPBreakoutsView />} />
-        </Routes>
+    <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: 24, fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box" }}>
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0, fontFamily: "JetBrains Mono", color: "#f8fafc" }}>NSE FACTOR SCREENER</h1>
+        <p style={{ color: "#334155", fontSize: 11, margin: "3px 0 0", fontFamily: "JetBrains Mono" }}>Research & screening terminal · descriptive factor rankings · not a signal engine · v5.3.0</p>
       </div>
-    </Router>
+      <Navbar />
+      <Routes>
+        <Route path="/portfolio" element={<PortfolioView />} />
+        <Route path="/booked" element={<BookedView />} />
+        <Route path="/" element={<ProfileView />} />
+        <Route path="/screener" element={<ScreenerView />} />
+        <Route path="/breakouts" element={<WeeklyBreakoutsView />} />
+        <Route path="/top" element={<TopPerformersView />} />
+        <Route path="/vcp" element={<VCPBreakoutsView />} />
+      </Routes>
+    </div>
   );
+}
+
+export default function App() {
+  return <Router><Shell /></Router>;
 }
