@@ -1061,6 +1061,82 @@ def portfolio_history(months: int = Query(default=6, ge=1, le=24)):
     return result
 
 
+TTL_DMA = 900   # DMA alerts cached 15 min
+
+
+@app.get("/alerts")
+def alerts(dma: int = Query(default=50, ge=5, le=200)):
+    """Holdings whose latest close is BELOW their N-day moving average (default 50
+    DMA) — a common trend-break / sell signal. 'days_below' counts consecutive
+    sessions under the average. Descriptive, not advice."""
+    doc = load_holdings()
+    positions = doc["positions"]
+    if not positions:
+        return {"dma": dma, "below": [], "summary": {"n_below": 0, "n_holdings": 0}, "disclaimer": DISCLAIMER}
+
+    hit, cached = CACHE.get(f"alerts:{dma}", TTL_DMA)
+    if hit:
+        return cached
+
+    rate = float(fetch_usdinr()["rate"])
+    posmap = {str(p["symbol"]).upper(): p for p in positions}
+    syms = sorted(posmap)
+    months = max(4, dma // 18 + 2)          # enough sessions for the average + buffer
+    try:
+        raw = yf.download(syms, period=f"{months}mo", progress=False, timeout=40,
+                          group_by="ticker" if len(syms) > 1 else "column", auto_adjust=False)
+    except Exception as exc:
+        raise HTTPException(502, f"History fetch failed: {exc}")
+
+    below, n_priced = [], 0
+    for s in syms:
+        try:
+            c = (raw[s]["Close"] if len(syms) > 1 else _flatten(raw)["Close"]).dropna()
+        except Exception:
+            continue
+        if len(c) < dma:
+            continue
+        n_priced += 1
+        dser = c.rolling(dma).mean()
+        last, d50 = float(c.iloc[-1]), float(dser.iloc[-1])
+        if last >= d50:
+            continue
+        arr = (c < dser).to_numpy()
+        db = 0
+        for v in arr[::-1]:
+            if bool(v):
+                db += 1
+            else:
+                break
+        p = posmap[s]
+        exch = str(p.get("exchange", "NSE")).upper()
+        fxm = rate if exch == "US" else 1.0
+        below.append({
+            "symbol": s.replace(".NS", "").replace(".BO", ""),
+            "exchange": exch,
+            "last_price": round(last, 2), "dma": round(d50, 2),
+            "pct_from_dma": round((last / d50 - 1) * 100, 2),
+            "days_below": db, "just_crossed": db <= 2,
+            "value_inr": round(float(p.get("qty", 0)) * last * fxm, 2),
+        })
+
+    below.sort(key=lambda x: x["pct_from_dma"])   # deepest below first
+    result = {
+        "dma": dma,
+        "below": below,
+        "summary": {
+            "n_below": len(below), "n_holdings": len(positions), "n_priced": n_priced,
+            "value_below_inr": round(sum(b["value_inr"] for b in below), 2),
+            "just_crossed": sum(1 for b in below if b["just_crossed"]),
+        },
+        "note": f"Latest close under the {dma}-day moving average; days_below = consecutive "
+                f"sessions under it. A trend-break/sell flag — descriptive, not advice.",
+        "disclaimer": DISCLAIMER,
+    }
+    CACHE.set(f"alerts:{dma}", result)
+    return result
+
+
 def _reduce_holding(sym: str, exch: str, qty: float):
     """Reduce a holding's quantity after a booked sell; remove it if fully closed."""
     try:

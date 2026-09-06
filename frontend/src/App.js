@@ -807,6 +807,7 @@ function PortfolioView() {
   const [allocData, setAllocData] = useState(null);
   const [bookedData, setBookedData] = useState(null);
   const [histData, setHistData] = useState(null);
+  const [alertsData, setAlertsData] = useState(null);
   const [highlight, setHighlight] = useState(null);   // {kind:"sector"|"holding", value}
   const tableRef = useRef(null);
 
@@ -835,7 +836,11 @@ function PortfolioView() {
     try { const { data: res } = await axios.get(`${API_BASE}/portfolio-history?months=6`); setHistData(res); }
     catch { /* equity curve is optional enrichment */ }
   }, []);
-  useEffect(() => { if (unlocked) { load(); loadDiv(); loadAlloc(); loadBooked(); loadHist(); } }, [load, loadDiv, loadAlloc, loadBooked, loadHist, unlocked]);
+  const loadAlerts = useCallback(async () => {
+    try { const { data: res } = await axios.get(`${API_BASE}/alerts?dma=50`); setAlertsData(res); }
+    catch { /* alerts are optional enrichment */ }
+  }, []);
+  useEffect(() => { if (unlocked) { load(); loadDiv(); loadAlloc(); loadBooked(); loadHist(); loadAlerts(); } }, [load, loadDiv, loadAlloc, loadBooked, loadHist, loadAlerts, unlocked]);
   // Re-fetch when the tab/window regains focus, so a sale booked elsewhere
   // (or in another window) is reflected without a manual refresh.
   useEffect(() => {
@@ -937,6 +942,11 @@ function PortfolioView() {
     (divData?.holdings ?? []).forEach((r) => { m[r.symbol] = r; });
     return m;
   }, [divData]);
+  const alertsBySym = useMemo(() => {
+    const m = {};
+    (alertsData?.below ?? []).forEach((a) => { m[a.symbol] = a; });
+    return m;
+  }, [alertsData]);
   const totalReturn = useMemo(() => {
     if (!s) return null;
     const unreal = s.pnl_inr ?? 0;
@@ -1088,6 +1098,23 @@ function PortfolioView() {
           </div>
         )}
 
+        {alertsData?.summary?.n_below > 0 && (
+          <div style={{ background: "rgba(255,77,77,0.07)", border: "1px solid rgba(255,77,77,0.4)", borderRadius: 10, padding: "12px 16px", marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: "#ff4d4d", fontFamily: "JetBrains Mono" }}>⚠ 50 DMA SELL SIGNALS</span>
+              <span style={{ fontSize: 11, color: "#94a3b8", fontFamily: "JetBrains Mono" }}>{alertsData.summary.n_below} of {alertsData.summary.n_priced} below their 50-day average · {base(alertsData.summary.value_below_inr)} at risk{alertsData.summary.just_crossed ? ` · ${alertsData.summary.just_crossed} just crossed ★` : ""}</span>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+              {alertsData.below.slice(0, 12).map((a) => (
+                <span key={a.symbol} onClick={() => { setHighlight({ kind: "holding", value: a.symbol }); setTimeout(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60); }}
+                  title={`${a.pct_from_dma}% below 50 DMA (₹${a.dma}) · ${a.days_below} sessions below`}
+                  style={{ cursor: "pointer", background: a.just_crossed ? "rgba(245,158,11,0.15)" : "rgba(255,77,77,0.12)", color: a.just_crossed ? "#f59e0b" : "#ff4d4d", padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: "JetBrains Mono" }}>{a.symbol} {a.pct_from_dma}%{a.just_crossed ? " ★" : ""}</span>
+              ))}
+              {alertsData.below.length > 12 && <span style={{ color: "#64748b", fontSize: 10, fontFamily: "JetBrains Mono", alignSelf: "center" }}>+{alertsData.below.length - 12} more · see ▼50D in the table</span>}
+            </div>
+          </div>
+        )}
+
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16, fontSize: 11, fontFamily: "JetBrains Mono" }}>
           <span style={{ background: "rgba(0,212,255,0.1)", color: "#00d4ff", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>NSE {data.allocation?.NSE ?? 0}%</span>
           <span style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", padding: "5px 11px", borderRadius: 4, fontWeight: 700 }}>US {data.allocation?.US ?? 0}%</span>
@@ -1151,7 +1178,10 @@ function PortfolioView() {
                 const hl = isHighlighted(h);
                 return (
                 <tr key={h.symbol + h.exchange} style={{ borderBottom: "1px solid #0f172a", background: hl ? "rgba(0,212,255,0.12)" : editing ? "rgba(0,212,255,0.04)" : "transparent", opacity: hl === false ? 0.28 : 1, transition: "opacity .15s" }}>
-                  <td style={{ padding: "11px 10px", fontWeight: 700, color: "#00d4ff" }}>{h.symbol}</td>
+                  <td style={{ padding: "11px 10px", fontWeight: 700, color: "#00d4ff", whiteSpace: "nowrap" }}>
+                    {h.symbol}
+                    {alertsBySym[h.symbol] && <span title={`${alertsBySym[h.symbol].pct_from_dma}% below 50 DMA (₹${alertsBySym[h.symbol].dma}) · ${alertsBySym[h.symbol].days_below} sessions below`} style={{ marginLeft: 6, fontSize: 8, fontWeight: 800, color: alertsBySym[h.symbol].just_crossed ? "#f59e0b" : "#ff4d4d", background: alertsBySym[h.symbol].just_crossed ? "rgba(245,158,11,0.14)" : "rgba(255,77,77,0.12)", padding: "1px 5px", borderRadius: 3 }}>▼50D</span>}
+                  </td>
                   <td style={{ padding: "11px 10px" }}>
                     <span style={{ background: h.exchange === "US" ? "rgba(245,158,11,0.12)" : "rgba(0,212,255,0.1)", color: h.exchange === "US" ? "#f59e0b" : "#00d4ff", padding: "2px 7px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{h.exchange}</span>
                   </td>
