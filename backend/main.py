@@ -853,6 +853,113 @@ def dividends():
     }
 
 
+SECTOR_CACHE_PATH = os.path.join(os.path.dirname(HOLDINGS_PATH), "sector_cache.json")
+_sector_cache = None   # lazy {symbol: sector|null}; sectors are static so persist to disk
+
+
+def _load_sector_cache() -> dict:
+    global _sector_cache
+    if _sector_cache is None:
+        try:
+            with open(SECTOR_CACHE_PATH, encoding="utf-8") as fh:
+                _sector_cache = json.load(fh)
+        except Exception:
+            _sector_cache = {}
+    return _sector_cache
+
+
+def _fetch_sector(sym: str):
+    try:
+        return yf.Ticker(sym).info.get("sector") or None
+    except Exception:
+        return None
+
+
+def sectors_for(symbols: list[str]) -> dict:
+    """{symbol: sector} from yfinance, persistently cached (delete sector_cache.json
+    to refresh). None (ETFs / lookups that failed) is cached to avoid re-fetching."""
+    cache = _load_sector_cache()
+    missing = [s for s in dict.fromkeys(symbols) if s not in cache]
+    if missing:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            cache.update(zip(missing, ex.map(_fetch_sector, missing)))
+        try:
+            with open(SECTOR_CACHE_PATH + ".tmp", "w", encoding="utf-8") as fh:
+                json.dump(cache, fh, indent=2)
+            os.replace(SECTOR_CACHE_PATH + ".tmp", SECTOR_CACHE_PATH)
+        except Exception as exc:
+            log.warning("sector cache save failed: %s", exc)
+    return {s: cache.get(s) for s in symbols}
+
+
+@app.get("/allocation")
+def allocation():
+    """Portfolio composition by market, sector and holding, plus concentration
+    metrics — all weighted by live market value in the INR base. Descriptive."""
+    doc = load_holdings()
+    positions = doc["positions"]
+    if not positions:
+        return {"total_value_inr": 0, "by_market": [], "by_sector": [],
+                "by_holding": [], "concentration": {}, "fx": fetch_usdinr(),
+                "disclaimer": DISCLAIMER}
+
+    fx = fetch_usdinr()
+    rate = float(fx["rate"])
+    prices = fetch_last_prices([p["symbol"] for p in positions])
+    secmap = sectors_for([str(p["symbol"]).upper() for p in positions])
+
+    total = 0.0
+    per, mkt, sec = [], {"NSE": 0.0, "US": 0.0}, {}
+    for p in positions:
+        sym = str(p["symbol"]).upper()
+        exch = str(p.get("exchange", "NSE")).upper()
+        is_us = exch == "US"
+        fxm = rate if is_us else 1.0
+        qty, avg = float(p.get("qty", 0)), float(p.get("avg_price", 0))
+        px = prices.get(sym)
+        last = px["last"] if px else avg
+        val = qty * last * fxm
+        total += val
+        mkt["US" if is_us else "NSE"] += val
+        s = secmap.get(sym) or "ETF / Other"
+        sec[s] = sec.get(s, 0.0) + val
+        per.append({"symbol": sym.replace(".NS", "").replace(".BO", ""),
+                    "exchange": exch, "value_inr": val})
+
+    t = total or 1.0
+    per.sort(key=lambda x: x["value_inr"], reverse=True)
+    wpct = lambda v: round(v / t * 100, 2)
+
+    # by-holding: top 10 named + the rest rolled into "Others"
+    by_holding = [{"symbol": h["symbol"], "value_inr": round(h["value_inr"], 2),
+                   "pct": wpct(h["value_inr"])} for h in per[:10]]
+    if len(per) > 10:
+        rest = sum(h["value_inr"] for h in per[10:])
+        by_holding.append({"symbol": f"Others ({len(per) - 10})",
+                           "value_inr": round(rest, 2), "pct": wpct(rest)})
+
+    hhi = round(sum((h["value_inr"] / t * 100) ** 2 for h in per), 0)  # 0–10000
+    return {
+        "total_value_inr": round(total, 2),
+        "by_market": [{"name": k, "value_inr": round(v, 2), "pct": wpct(v)}
+                      for k, v in mkt.items() if v > 0],
+        "by_sector": sorted(({"name": k, "value_inr": round(v, 2), "pct": wpct(v)}
+                             for k, v in sec.items()), key=lambda x: x["value_inr"], reverse=True),
+        "by_holding": by_holding,
+        "concentration": {
+            "n_holdings": len(per),
+            "n_sectors": len([k for k in sec if k != "ETF / Other"]),
+            "top5_pct": round(sum(h["value_inr"] for h in per[:5]) / t * 100, 1),
+            "top10_pct": round(sum(h["value_inr"] for h in per[:10]) / t * 100, 1),
+            "largest": {"symbol": per[0]["symbol"], "pct": wpct(per[0]["value_inr"])} if per else None,
+            "hhi": hhi,
+            "hhi_label": ("Concentrated" if hhi >= 2500 else "Moderate" if hhi >= 1500 else "Diversified"),
+        },
+        "fx": {**fx, "pair": "USDINR"},
+        "disclaimer": DISCLAIMER,
+    }
+
+
 def _reduce_holding(sym: str, exch: str, qty: float):
     """Reduce a holding's quantity after a booked sell; remove it if fully closed."""
     try:

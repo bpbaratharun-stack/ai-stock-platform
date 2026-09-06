@@ -804,6 +804,7 @@ function PortfolioView() {
   const [setupMode, setSetupMode] = useState(false);
   const [lockMsg, setLockMsg] = useState(null);
   const [divData, setDivData] = useState(null);
+  const [allocData, setAllocData] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -818,7 +819,11 @@ function PortfolioView() {
     try { const { data: res } = await axios.get(`${API_BASE}/dividends`); setDivData(res); }
     catch { /* dividends are optional enrichment */ }
   }, []);
-  useEffect(() => { if (unlocked) { load(); loadDiv(); } }, [load, loadDiv, unlocked]);
+  const loadAlloc = useCallback(async () => {
+    try { const { data: res } = await axios.get(`${API_BASE}/allocation`); setAllocData(res); }
+    catch { /* allocation is optional enrichment */ }
+  }, []);
+  useEffect(() => { if (unlocked) { load(); loadDiv(); loadAlloc(); } }, [load, loadDiv, loadAlloc, unlocked]);
   // Re-fetch when the tab/window regains focus, so a sale booked elsewhere
   // (or in another window) is reflected without a manual refresh.
   useEffect(() => {
@@ -1130,6 +1135,49 @@ function PortfolioView() {
         <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12 }}>
           Per-share AVG BUY / LTP shown in native currency · INVESTED / VALUE / P&L rolled into {disp} at USDINR {rate} · LTP from yfinance (may lag ~15m) · positions from data/holdings.json. DIV/YR = projected annual dividend at current qty × trailing-12m dividend rate (dim = yield-on-cost) — a forward income estimate, not cash received. Factual reporting of your cost basis vs. latest price — not advice.
         </div>
+
+        {allocData?.concentration && (() => {
+          const c = allocData.concentration;
+          const PIE = ["#00d4ff", "#00e396", "#f59e0b", "#a855f7", "#ff4d4d", "#2dd4bf", "#38bdf8", "#f472b6", "#facc15", "#94a3b8", "#fb923c"];
+          const donut = (rows, key) => ({
+            options: {
+              chart: { type: "donut", background: "transparent", animations: { enabled: false } },
+              theme: { mode: "dark" }, labels: rows.map((r) => r[key]), colors: PIE,
+              dataLabels: { enabled: true, formatter: (v) => (v >= 6 ? Math.round(v) + "%" : ""), style: { fontSize: "9px", fontFamily: "JetBrains Mono", fontWeight: 700 }, dropShadow: { enabled: false } },
+              legend: { position: "bottom", fontSize: "9px", fontFamily: "JetBrains Mono", labels: { colors: "#94a3b8" }, itemMargin: { horizontal: 5, vertical: 1 }, markers: { width: 8, height: 8 } },
+              stroke: { colors: ["#0b0f19"], width: 2 }, plotOptions: { pie: { donut: { size: "60%" } } },
+              tooltip: { theme: "dark", y: { formatter: (v) => v + "%" } },
+            },
+            series: rows.map((r) => r.pct),
+          });
+          const sec = donut(allocData.by_sector, "name");
+          const hold = donut(allocData.by_holding, "symbol");
+          const hhiColor = c.hhi_label === "Concentrated" ? "#ff4d4d" : c.hhi_label === "Moderate" ? "#f59e0b" : "#00e396";
+          return (
+            <div style={{ marginTop: 22 }}>
+              <div style={{ fontSize: 12, color: "#00d4ff", fontWeight: 800, fontFamily: "JetBrains Mono", marginBottom: 12, letterSpacing: "0.05em" }}>📊 ALLOCATION & CONCENTRATION</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 16 }}>
+                <StatCard label="HOLDINGS" value={`${c.n_holdings} · ${c.n_sectors} sectors`} />
+                <StatCard label="TOP-5 WEIGHT" value={`${c.top5_pct}%`} accent="#38bdf8" badge={`top-10 ${c.top10_pct}%`} />
+                <StatCard label="LARGEST POSITION" value={c.largest ? `${c.largest.symbol} ${c.largest.pct}%` : "—"} accent="#f59e0b" />
+                <StatCard label="DIVERSIFICATION" value={c.hhi_label} accent={hhiColor} badge={`HHI ${c.hhi}`} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontFamily: "JetBrains Mono", marginBottom: 6, letterSpacing: "0.05em" }}>BY SECTOR</div>
+                  <Chart options={sec.options} series={sec.series} type="donut" height={280} />
+                </div>
+                <div style={{ background: "#0b0f19", border: "1px solid #1e293b", borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontFamily: "JetBrains Mono", marginBottom: 6, letterSpacing: "0.05em" }}>BY HOLDING (TOP 10 + OTHERS)</div>
+                  <Chart options={hold.options} series={hold.series} type="donut" height={280} />
+                </div>
+              </div>
+              <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 10 }}>
+                Weighted by live market value ({disp}). Sectors via yfinance (ETFs shown as "ETF / Other"). HHI = Herfindahl index (Σ weight²): &lt;1500 diversified · 1500–2500 moderate · &gt;2500 concentrated.
+              </div>
+            </div>
+          );
+        })()}
       </>)}
 
       {data && !loading && !hasHoldings && (
