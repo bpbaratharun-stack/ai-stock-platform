@@ -868,28 +868,33 @@ def _load_sector_cache() -> dict:
     return _sector_cache
 
 
-def _fetch_sector(sym: str):
+def _fetch_sec_ind(sym: str) -> dict:
+    """yfinance {sector, industry}. Yahoo's 'sector' is a broad GICS-style bucket
+    (autos sit under Consumer Cyclical); 'industry' is the specific one shown per
+    stock (Auto Manufacturers, Banks - Regional, ...)."""
     try:
-        return yf.Ticker(sym).info.get("sector") or None
+        i = yf.Ticker(sym).info
+        return {"sector": i.get("sector") or None, "industry": i.get("industry") or None}
     except Exception:
-        return None
+        return {"sector": None, "industry": None}
 
 
 def sectors_for(symbols: list[str]) -> dict:
-    """{symbol: sector} from yfinance, persistently cached (delete sector_cache.json
-    to refresh). None (ETFs / lookups that failed) is cached to avoid re-fetching."""
+    """{symbol: {sector, industry}} from yfinance, persistently cached (delete
+    sector_cache.json to refresh). Old string-format entries auto-migrate."""
     cache = _load_sector_cache()
-    missing = [s for s in dict.fromkeys(symbols) if s not in cache]
+    missing = [s for s in dict.fromkeys(symbols) if not isinstance(cache.get(s), dict)]
     if missing:
         with ThreadPoolExecutor(max_workers=8) as ex:
-            cache.update(zip(missing, ex.map(_fetch_sector, missing)))
+            cache.update(zip(missing, ex.map(_fetch_sec_ind, missing)))
         try:
             with open(SECTOR_CACHE_PATH + ".tmp", "w", encoding="utf-8") as fh:
                 json.dump(cache, fh, indent=2)
             os.replace(SECTOR_CACHE_PATH + ".tmp", SECTOR_CACHE_PATH)
         except Exception as exc:
             log.warning("sector cache save failed: %s", exc)
-    return {s: cache.get(s) for s in symbols}
+    return {s: (cache.get(s) if isinstance(cache.get(s), dict)
+                else {"sector": cache.get(s), "industry": None}) for s in symbols}
 
 
 @app.get("/allocation")
@@ -909,7 +914,7 @@ def allocation():
     secmap = sectors_for([str(p["symbol"]).upper() for p in positions])
 
     total = 0.0
-    per, mkt, sec, sym_sector = [], {"NSE": 0.0, "US": 0.0}, {}, {}
+    per, mkt, sec, sym_industry = [], {"NSE": 0.0, "US": 0.0}, {}, {}
     for p in positions:
         sym = str(p["symbol"]).upper()
         exch = str(p.get("exchange", "NSE")).upper()
@@ -921,10 +926,12 @@ def allocation():
         val = qty * last * fxm
         total += val
         mkt["US" if is_us else "NSE"] += val
-        s = secmap.get(sym) or "ETF / Other"
-        sec[s] = sec.get(s, 0.0) + val
+        d = secmap.get(sym) or {}
+        sector = d.get("sector") or "ETF / Other"          # broad bucket for the donut
+        industry = d.get("industry") or d.get("sector") or "ETF / Other"  # specific, per stock
+        sec[sector] = sec.get(sector, 0.0) + val
         disp = sym.replace(".NS", "").replace(".BO", "")
-        sym_sector[disp] = s
+        sym_industry[disp] = industry
         per.append({"symbol": disp, "exchange": exch, "value_inr": val})
 
     t = total or 1.0
@@ -947,7 +954,7 @@ def allocation():
         "by_sector": sorted(({"name": k, "value_inr": round(v, 2), "pct": wpct(v)}
                              for k, v in sec.items()), key=lambda x: x["value_inr"], reverse=True),
         "by_holding": by_holding,
-        "sectors": sym_sector,
+        "industries": sym_industry,
         "concentration": {
             "n_holdings": len(per),
             "n_sectors": len([k for k in sec if k != "ETF / Other"]),

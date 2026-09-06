@@ -864,8 +864,8 @@ function PortfolioView() {
 
   const view = useMemo(() => {
     if (!data?.holdings) return [];
-    const sm = allocData?.sectors ?? {};
-    const rows = data.holdings.map((h) => ({ ...h, sector: sm[h.symbol] || "—" }));
+    const sm = allocData?.industries ?? {};
+    const rows = data.holdings.map((h) => ({ ...h, industry: sm[h.symbol] || "—" }));
     const dir = sortDir === "asc" ? 1 : -1;
     return rows.sort((a, b) => {
       const va = a[sortKey], vb = b[sortKey];
@@ -947,7 +947,7 @@ function PortfolioView() {
   const COLS = [
     { key: "symbol", label: "SYMBOL", numeric: false },
     { key: "exchange", label: "MKT", numeric: false },
-    { key: "sector", label: "SECTOR", numeric: false },
+    { key: "industry", label: "INDUSTRY", numeric: false },
     { key: "qty", label: "QTY", numeric: true },
     { key: "avg_price", label: "AVG BUY", numeric: true },
     { key: "last_price", label: "LTP", numeric: true },
@@ -1129,7 +1129,7 @@ function PortfolioView() {
                   <td style={{ padding: "11px 10px" }}>
                     <span style={{ background: h.exchange === "US" ? "rgba(245,158,11,0.12)" : "rgba(0,212,255,0.1)", color: h.exchange === "US" ? "#f59e0b" : "#00d4ff", padding: "2px 7px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{h.exchange}</span>
                   </td>
-                  <td style={{ padding: "11px 10px", color: "#94a3b8", fontSize: 11, whiteSpace: "nowrap" }}>{h.sector}</td>
+                  <td style={{ padding: "11px 10px", color: "#94a3b8", fontSize: 11, whiteSpace: "nowrap" }}>{h.industry}</td>
                   <td style={{ padding: "11px 10px", textAlign: "right" }}>
                     {editing
                       ? <input value={editVals.qty} onChange={(e) => setEditVals((v) => ({ ...v, qty: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(h); if (e.key === "Escape") cancelEdit(); }} inputMode="decimal" autoFocus style={cellEdit} />
