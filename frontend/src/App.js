@@ -803,6 +803,7 @@ function PortfolioView() {
   const [pin2, setPin2] = useState("");
   const [setupMode, setSetupMode] = useState(false);
   const [lockMsg, setLockMsg] = useState(null);
+  const [divData, setDivData] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -812,7 +813,12 @@ function PortfolioView() {
     } catch (e) { setError(e?.response?.data?.detail ?? "Failed to load portfolio. Is the backend running and holdings.json present?"); }
     finally { setLoading(false); }
   }, []);
-  useEffect(() => { if (unlocked) load(); }, [load, unlocked]);
+  // Dividend run-rate loads separately (can be slow cold) so it never blocks the board.
+  const loadDiv = useCallback(async () => {
+    try { const { data: res } = await axios.get(`${API_BASE}/dividends`); setDivData(res); }
+    catch { /* dividends are optional enrichment */ }
+  }, []);
+  useEffect(() => { if (unlocked) { load(); loadDiv(); } }, [load, loadDiv, unlocked]);
   // Re-fetch when the tab/window regains focus, so a sale booked elsewhere
   // (or in another window) is reflected without a manual refresh.
   useEffect(() => {
@@ -907,6 +913,11 @@ function PortfolioView() {
 
   const s = data?.summary;
   const hasHoldings = data?.holdings?.length > 0;
+  const divBySym = useMemo(() => {
+    const m = {};
+    (divData?.holdings ?? []).forEach((r) => { m[r.symbol] = r; });
+    return m;
+  }, [divData]);
   const COLS = [
     { key: "symbol", label: "SYMBOL", numeric: false },
     { key: "exchange", label: "MKT", numeric: false },
@@ -1008,11 +1019,12 @@ function PortfolioView() {
       )}
 
       {hasHoldings && s && (<>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 16 }}>
           <StatCard label="TOTAL INVESTED" value={base(s.invested_inr)} />
           <StatCard label="CURRENT VALUE" value={base(s.value_inr)} />
           <StatCard label="TOTAL P&L" value={`${baseSigned(s.pnl_inr)}  ${s.pnl_pct >= 0 ? "▲" : "▼"}${Math.abs(s.pnl_pct)}%`} accent={pnlColor(s.pnl_inr)} />
           <StatCard label="DAY'S CHANGE" value={`${baseSigned(s.day_change_inr)}  ${s.day_change_pct >= 0 ? "▲" : "▼"}${Math.abs(s.day_change_pct)}%`} accent={pnlColor(s.day_change_inr)} />
+          <StatCard label="EST. ANNUAL DIV" value={divData?.summary ? base(divData.summary.annual_income_inr) : "…"} accent="#2dd4bf" badge={divData?.summary ? `${divData.summary.portfolio_yield_pct}% yld` : null} />
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16, fontSize: 11, fontFamily: "JetBrains Mono" }}>
@@ -1058,6 +1070,7 @@ function PortfolioView() {
                   style={{ padding: "0 10px 8px", textAlign: rightCols.has(c.key) ? "right" : "left", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em", cursor: "pointer", userSelect: "none", color: sortKey === c.key ? "#00d4ff" : "#64748b" }}>
                   {c.label}{sortKey === c.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
                 </th>))}
+              <th style={{ padding: "0 10px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em", color: "#64748b" }} title="Projected annual dividend (current qty × trailing-12m rate) · dim number is yield-on-cost">DIV/YR</th>
               <th style={{ padding: "0 10px 8px", textAlign: "center", fontWeight: 600, fontSize: 10, letterSpacing: "0.05em", color: "#64748b" }}>1M TREND</th>
               <th style={{ padding: "0 10px 8px" }}></th>
             </tr></thead>
@@ -1091,6 +1104,13 @@ function PortfolioView() {
                   <td style={{ padding: "11px 10px", textAlign: "right", fontWeight: 700, color: pnlColor(h.pnl_inr) }}>{baseSigned(h.pnl_inr)}</td>
                   <td style={{ padding: "11px 10px", textAlign: "right", fontWeight: 700, color: pnlColor(h.pnl_pct) }}>{h.pnl_pct >= 0 ? "+" : ""}{h.pnl_pct}%</td>
                   <td style={{ padding: "11px 10px", textAlign: "right", color: pnlColor(h.day_change_pct) }}>{h.day_change_pct >= 0 ? "+" : ""}{h.day_change_pct}%</td>
+                  <td style={{ padding: "11px 10px", textAlign: "right" }}>
+                    {(() => {
+                      const dv = divBySym[h.symbol];
+                      if (!dv || !(dv.annual_income_inr > 0)) return <span style={{ color: "#475569" }}>—</span>;
+                      return <span style={{ color: "#2dd4bf" }} title={`Yield on cost ${dv.yield_on_cost_pct}% · current yield ${dv.current_yield_pct}% · ${nativePx(dv.div_per_share_ttm, dv.currency)}/sh TTM`}>{base(dv.annual_income_inr)} <span style={{ color: "#475569", fontSize: 10 }}>{dv.yield_on_cost_pct}%</span></span>;
+                    })()}
+                  </td>
                   <td style={{ padding: "8px 10px", textAlign: "center" }}><span style={{ display: "inline-block", verticalAlign: "middle" }}><Spark data={h.spark} /></span></td>
                   <td style={{ padding: "11px 10px", textAlign: "center", whiteSpace: "nowrap" }}>
                     {editing ? (<>
@@ -1108,7 +1128,7 @@ function PortfolioView() {
         </div>
 
         <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12 }}>
-          Per-share AVG BUY / LTP shown in native currency · INVESTED / VALUE / P&L rolled into {disp} at USDINR {rate} · LTP from yfinance (may lag ~15m) · positions from data/holdings.json. Factual reporting of your cost basis vs. latest price — not advice.
+          Per-share AVG BUY / LTP shown in native currency · INVESTED / VALUE / P&L rolled into {disp} at USDINR {rate} · LTP from yfinance (may lag ~15m) · positions from data/holdings.json. DIV/YR = projected annual dividend at current qty × trailing-12m dividend rate (dim = yield-on-cost) — a forward income estimate, not cash received. Factual reporting of your cost basis vs. latest price — not advice.
         </div>
       </>)}
 

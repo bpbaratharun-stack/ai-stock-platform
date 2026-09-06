@@ -17,6 +17,7 @@ import json
 import uuid
 import logging
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -754,6 +755,100 @@ def portfolio():
                        "US": round(alloc["US"] / tv * 100, 1)},
         "fx": {**fx, "pair": "USDINR"},
         "stale_symbols": stale,
+        "disclaimer": DISCLAIMER,
+    }
+
+
+TTL_DIV = 43200   # dividends change rarely — cache each symbol's TTM figure 12h
+
+
+def _ttm_dividend_per_share(sym: str) -> float:
+    """Trailing-12-month cash dividend per share for one ticker (native currency),
+    from yfinance. Cached per symbol; 0.0 for non-payers or on any fetch error."""
+    hit, v = CACHE.get(f"div:{sym}", TTL_DIV)
+    if hit:
+        return v
+    val = 0.0
+    try:
+        s = yf.Ticker(sym).dividends            # Series: ex-date -> dividend/share
+        if s is not None and len(s):
+            cutoff = pd.Timestamp.now(tz=s.index.tz) - pd.Timedelta(days=365)
+            val = round(float(s[s.index >= cutoff].sum()), 4)
+    except Exception as exc:
+        log.warning("Dividend fetch failed %s: %s", sym, exc)
+    CACHE.set(f"div:{sym}", val)
+    return val
+
+
+def fetch_dividends_ttm(symbols: list[str]) -> dict:
+    """{symbol: TTM dividend/share}. Cold symbols fetched in parallel; cached hot."""
+    syms = sorted({s.upper() for s in symbols})
+    if not syms:
+        return {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        vals = list(ex.map(_ttm_dividend_per_share, syms))
+    return dict(zip(syms, vals))
+
+
+@app.get("/dividends")
+def dividends():
+    """Automated dividend run-rate per holding: current qty × trailing-12-month
+    dividend/share (yfinance), rolled into an INR base. Descriptive — a forward
+    income estimate at your current holdings, not a record of cash received."""
+    doc = load_holdings()
+    positions = doc["positions"]
+    if not positions:
+        return {"holdings": [], "summary": {}, "fx": fetch_usdinr(), "disclaimer": DISCLAIMER}
+
+    fx = fetch_usdinr()
+    rate = float(fx["rate"])
+    divmap = fetch_dividends_ttm([p["symbol"] for p in positions])
+    prices = fetch_last_prices([p["symbol"] for p in positions])   # cache hit if /portfolio just ran
+
+    rows = []
+    tot_income = tot_inv = tot_val = 0.0
+    for p in positions:
+        sym = str(p["symbol"]).upper()
+        exch = str(p.get("exchange", "NSE")).upper()
+        is_us = exch == "US"
+        fxm = rate if is_us else 1.0
+        qty = float(p.get("qty", 0))
+        avg = float(p.get("avg_price", 0))
+        dps = float(divmap.get(sym, 0.0))                 # native dividend/share (TTM)
+        px = prices.get(sym)
+        last = px["last"] if px else avg
+
+        annual_inr = qty * dps * fxm
+        invested_inr = qty * avg * fxm
+        value_inr = qty * last * fxm
+        tot_income += annual_inr
+        tot_inv += invested_inr
+        tot_val += value_inr
+
+        rows.append({
+            "symbol": sym.replace(".NS", "").replace(".BO", ""),
+            "exchange": exch, "currency": "USD" if is_us else "INR",
+            "qty": round(qty, 4),
+            "div_per_share_ttm": round(dps, 4),           # native ₹/$ per share
+            "annual_income_inr": round(annual_inr, 2),
+            "yield_on_cost_pct": round(dps / avg * 100, 2) if avg else 0.0,
+            "current_yield_pct": round(dps / last * 100, 2) if last else 0.0,
+            "payer": dps > 0,
+        })
+
+    rows.sort(key=lambda r: r["annual_income_inr"], reverse=True)
+    return {
+        "holdings": rows,
+        "summary": {
+            "annual_income_inr": round(tot_income, 2),
+            "n_payers": sum(1 for r in rows if r["payer"]),
+            "n_holdings": len(rows),
+            "portfolio_yield_pct": round(tot_income / tot_val * 100, 2) if tot_val else 0.0,
+            "yield_on_cost_pct": round(tot_income / tot_inv * 100, 2) if tot_inv else 0.0,
+        },
+        "fx": {**fx, "pair": "USDINR"},
+        "note": "TTM run-rate: current quantity × trailing-12-month dividend/share. "
+                "A forward income estimate, not cash actually received.",
         "disclaimer": DISCLAIMER,
     }
 
