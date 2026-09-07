@@ -12,6 +12,7 @@ import axios from "axios";
 import Chart from "react-apexcharts";
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
 import PortfolioV2 from "./PortfolioV2";
+import BookingV2 from "./BookingV2";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -1610,6 +1611,7 @@ function Shell() {
   // The reskinned Portfolio (/v2) is a full-page light view — render it outside
   // the dark research shell so it isn't framed by the terminal chrome.
   if (loc.pathname === "/v2") return <PortfolioV2 />;
+  if (loc.pathname === "/v2/booked") return <BookingV2 />;
   return (
     <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: 24, fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box" }}>
       <div style={{ marginBottom: 20 }}>

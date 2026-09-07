@@ -8,7 +8,7 @@ import axios from "axios";
 import { Link } from "react-router-dom";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
-const FONTS = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap";
+export const FONTS = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap";
 
 const SECTOR_COLORS = ["#0E7C71", "#3B6FE0", "#C77A12", "#5E63C9", "#8A94A3",
   "#0E9AA7", "#B2506E", "#2FA36B", "#9A7BD1", "#D98C3A", "#4C9F70", "#7C8794"];
@@ -58,7 +58,7 @@ function linePts(vals, W, H, pad) {
   return { pts, X, Y, zero: mn < 0 && mx > 0 ? Y(0) : null, base: Y(mn < 0 ? 0 : mn) };
 }
 
-const css = `
+export const PF2_CSS = `
 .pf{--bg:#F4F6F8;--panel:#FFFFFF;--panel2:#FAFBFC;--line:#E6E9EF;--line2:#EEF1F5;
   --ink:#14202E;--muted:#65717F;--faint:#98A2AF;--brand:#0E7C71;--brandbg:#E4F2EF;
   --pos:#0FA05A;--posbg:#E7F6EE;--neg:#E14742;--negbg:#FCEBEA;--warn:#B9770B;--warnbg:#FBF1DE;
@@ -143,6 +143,25 @@ const css = `
 .pf .dma.f{background:var(--warnbg);color:var(--warn)}
 .pf .foot{color:var(--faint);font-size:11.5px;margin-top:18px;text-align:center;line-height:1.6}
 .pf .loading{padding:80px;text-align:center;color:var(--muted)}
+.pf .nav{display:flex;gap:3px}
+.pf .nav a{text-decoration:none;color:var(--muted);font-weight:600;font-size:12.5px;padding:6px 12px;border-radius:9px}
+.pf .nav a.on{background:var(--brandbg);color:var(--brand)}
+.pf .form{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:16px 20px}
+.pf .field label{display:block;font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}
+.pf input,.pf select{height:36px;padding:0 11px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:9px;font:inherit;font-size:13px}
+.pf input:focus,.pf select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brandbg)}
+.pf .btn{height:36px;padding:0 16px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;font-weight:600;font-size:13px;cursor:pointer}
+.pf .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.pf .btn.primary:hover{filter:brightness(1.05)}
+.pf .btn:disabled{opacity:.5;cursor:default}
+.pf .check{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);cursor:pointer}
+.pf .empty{padding:52px;text-align:center;color:var(--muted)}
+.pf .msg{font-size:12.5px;font-weight:600;padding:2px 20px 12px}
+.pf .del{background:transparent;border:0;color:var(--faint);cursor:pointer;font-size:14px}
+.pf .del:hover{color:var(--neg)}
+.pf .badge{display:inline-flex;align-items:center;gap:5px;font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.03em}
+.pf .badge.nse{background:var(--brandbg);color:var(--brand)}
+.pf .badge.us{background:var(--warnbg);color:var(--warn)}
 @media(max-width:820px){.pf .hero,.pf .two{grid-template-columns:1fr}.pf .kpis{grid-template-columns:repeat(2,1fr)}.pf .alloc{grid-template-columns:1fr}}
 `;
 
@@ -173,7 +192,7 @@ export default function PortfolioV2() {
   const signed = (inr) => (inr >= 0 ? "+" : "−") + base(Math.abs(inr));
 
   if (!data?.summary) {
-    return <div className="pf" data-pf-theme={theme}><style>{css}</style>
+    return <div className="pf" data-pf-theme={theme}><style>{PF2_CSS}</style>
       <div className="wrap"><div className="loading">Loading your portfolio…</div></div></div>;
   }
   const s = data.summary;
@@ -228,12 +247,12 @@ export default function PortfolioV2() {
   const c = alloc?.concentration;
   return (
     <div className="pf" data-pf-theme={theme}>
-      <style>{css}</style>
+      <style>{PF2_CSS}</style>
       <div className="wrap">
         <header className="top">
           <div className="brand">
             <h1>Portfolio</h1>
-            <span className="as num">NSE + US{data.fx ? ` · USDINR ${fx}` : ""}</span>
+            <nav className="nav"><Link className="on" to="/v2">Overview</Link><Link to="/v2/booked">Booking</Link></nav>
           </div>
           <div className="controls">
             <div className="seg">
