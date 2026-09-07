@@ -162,6 +162,7 @@ export const PF2_CSS = `
 .pf .badge{display:inline-flex;align-items:center;gap:5px;font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.03em}
 .pf .badge.nse{background:var(--brandbg);color:var(--brand)}
 .pf .badge.us{background:var(--warnbg);color:var(--warn)}
+.pf .badge.fund{background:var(--panel2);color:var(--muted);border:1px solid var(--line)}
 @media(max-width:820px){.pf .hero,.pf .two{grid-template-columns:1fr}.pf .kpis{grid-template-columns:repeat(2,1fr)}.pf .alloc{grid-template-columns:1fr}}
 `;
 
@@ -202,8 +203,9 @@ export default function PortfolioV2() {
     setBusy(true); setMsg(null);
     try {
       const { data: res } = await axios.post(`${API_BASE}/portfolio/positions`, { symbol: form.symbol.trim(), exchange: form.exchange, qty, avg_price: avg });
+      const added = (res.positions || []).find((p) => String(p.symbol).toUpperCase() === String(res.symbol).toUpperCase());
       setForm((f) => ({ symbol: "", exchange: f.exchange, qty: "", avg_price: "" }));
-      setMsg({ err: false, text: `Added ${res.symbol.replace(/\.NS$/, "")} to your portfolio.` });
+      setMsg({ err: false, text: `Added ${added?.name || res.symbol.replace(/\.NS$/, "")} to your portfolio.` });
       loadAll();
     } catch (err) { setMsg({ err: true, text: err?.response?.data?.detail ?? "Could not add the position." }); }
     finally { setBusy(false); }
@@ -408,26 +410,33 @@ export default function PortfolioV2() {
               <button className="btn primary" onClick={() => { setShowAdd((v) => !v); setMsg(null); }}>{showAdd ? "Close" : "+ Add shares"}</button>
             </div>
           </div>
-          {showAdd && (
+          {showAdd && (() => {
+            const isMF = form.exchange === "MF";
+            const isFund = isMF || form.exchange === "USMF";
+            return (
             <form className="form" onSubmit={addShares} style={{ borderBottom: "1px solid var(--line)" }}>
-              <div className="field"><label>Symbol</label>
-                <input value={form.symbol} onChange={(e) => setForm((f) => ({ ...f, symbol: e.target.value.toUpperCase() }))} placeholder="e.g. TMCV" style={{ width: 130 }} />
+              <div className="field"><label>{isMF ? "AMFI code" : "Symbol"}</label>
+                <input value={form.symbol} onChange={(e) => setForm((f) => ({ ...f, symbol: isMF ? e.target.value.replace(/\D/g, "") : e.target.value.toUpperCase() }))} placeholder={isMF ? "e.g. 120503" : "e.g. TMCV"} style={{ width: 130 }} inputMode={isMF ? "numeric" : "text"} />
               </div>
-              <div className="field"><label>Exchange</label>
+              <div className="field"><label>Type</label>
                 <select value={form.exchange} onChange={(e) => setForm((f) => ({ ...f, exchange: e.target.value }))}>
-                  <option value="NSE">NSE</option><option value="US">US</option>
+                  <option value="NSE">NSE stock</option>
+                  <option value="US">US stock</option>
+                  <option value="MF">India fund</option>
+                  <option value="USMF">US fund</option>
                 </select>
               </div>
-              <div className="field"><label>Quantity</label>
+              <div className="field"><label>{isFund ? "Units" : "Quantity"}</label>
                 <input value={form.qty} onChange={(e) => setForm((f) => ({ ...f, qty: e.target.value }))} placeholder="0" style={{ width: 90 }} inputMode="decimal" />
               </div>
-              <div className="field"><label>Avg buy price</label>
+              <div className="field"><label>{isFund ? "Avg NAV" : "Avg buy price"}</label>
                 <input value={form.avg_price} onChange={(e) => setForm((f) => ({ ...f, avg_price: e.target.value }))} placeholder="0" style={{ width: 110 }} inputMode="decimal" />
               </div>
               <button className="btn primary" type="submit" disabled={busy}>{busy ? "Adding…" : "Add"}</button>
-              <span className="eyebrow" style={{ textTransform: "none", letterSpacing: 0 }}>Adding an existing ticker averages into it.</span>
+              <span className="eyebrow" style={{ textTransform: "none", letterSpacing: 0 }}>{isMF ? "Find a fund's AMFI scheme code at mfapi.in." : "Adding an existing holding averages into it."}</span>
             </form>
-          )}
+            );
+          })()}
           {msg && <div className={`msg ${msg.err ? "neg" : "pos"}`}>{msg.text}</div>}
           <div style={{ overflowX: "auto" }}>
             <table className="num">
@@ -437,7 +446,7 @@ export default function PortfolioV2() {
                   const all = data.holdings ?? [];
                   const q = query.trim().toLowerCase();
                   const matched = q
-                    ? all.filter((h) => h.symbol.toLowerCase().includes(q) || (alloc?.industries?.[h.symbol] || "").toLowerCase().includes(q))
+                    ? all.filter((h) => h.symbol.toLowerCase().includes(q) || (h.name || "").toLowerCase().includes(q) || (alloc?.industries?.[h.symbol] || "").toLowerCase().includes(q))
                     : all;
                   const rows = q ? matched : (showAllH ? matched : matched.slice(0, 12));
                   if (rows.length === 0) {
@@ -450,6 +459,8 @@ export default function PortfolioV2() {
                   const al = alertBy[h.symbol];
                   const key = `${h.symbol}|${h.exchange}`;
                   const cur = h.currency === "USD" ? "$" : "₹";
+                  const primaryLabel = h.is_fund && h.name ? (h.name.length > 30 ? h.name.slice(0, 30) + "…" : h.name) : h.symbol;
+                  const subLabel = h.is_fund ? (h.name ? `AMFI ${h.symbol}` : "Mutual fund") : ind;
                   if (editKey === key) {
                     return (
                       <tr key={key}>
@@ -471,7 +482,7 @@ export default function PortfolioV2() {
                   }
                   return (
                     <tr key={key}>
-                      <td className="l"><div className="stk"><div className="s">{h.symbol}{al?.confirmed && <span className={`dma${al.fresh ? " f" : ""}`}>▼50D</span>}</div><div className="i">{ind}</div></div></td>
+                      <td className="l"><div className="stk"><div className="s" title={h.name || h.symbol}>{primaryLabel}{h.is_fund && <span className="badge fund">FUND</span>}{al?.confirmed && <span className={`dma${al.fresh ? " f" : ""}`}>▼50D</span>}</div><div className="i">{subLabel}</div></div></td>
                       <td title={`avg ${cur}${h.avg_price} · last ${cur}${h.last_price}`}>{h.qty}</td>
                       <td>{base(h.value_inr)}</td>
                       <td><div className="wcell"><div className="wbar"><span style={{ width: `${Math.min(wt / (c?.largest?.pct || 10) * 100, 100)}%` }} /></div>{wt.toFixed(1)}%</div></td>

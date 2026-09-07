@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -247,32 +248,87 @@ def fetch_usdinr():
     return res
 
 
+# A holding whose "symbol" is an all-digit AMFI scheme code is an Indian mutual
+# fund, priced from AMFI daily NAV (via mfapi.in) rather than yfinance.
+def _is_mf_code(sym: str) -> bool:
+    return str(sym).strip().isdigit()
+
+
+def _fetch_one_mf_nav(code: str) -> dict | None:
+    """Latest + previous NAV and a short NAV history for one AMFI scheme code,
+    from the free mfapi.in mirror of AMFI's daily NAV file."""
+    try:
+        r = requests.get(f"https://api.mfapi.in/mf/{code}", timeout=8)
+        r.raise_for_status()
+        j = r.json()
+        data = j.get("data") or []                       # newest-first: [{date, nav}, ...]
+        if not data:
+            return None
+        navs = []
+        for row in data:
+            try:
+                navs.append(float(row["nav"]))
+            except (KeyError, ValueError, TypeError):
+                pass
+        if not navs:
+            return None
+        last = navs[0]
+        prev = navs[1] if len(navs) >= 2 else last
+        spark = [round(x, 2) for x in navs[:22][::-1]]    # oldest→newest for the sparkline
+        return {"last": last, "prev": prev, "spark": spark,
+                "name": (j.get("meta") or {}).get("scheme_name")}
+    except Exception:
+        return None
+
+
+def fetch_mf_navs(codes: list[str]) -> dict:
+    """{scheme_code: {"last","prev","spark","name"}} for Indian mutual funds."""
+    codes = sorted({str(c).strip() for c in codes if _is_mf_code(c)})
+    if not codes:
+        return {}
+    key = "mf:" + ",".join(codes)
+    hit, v = CACHE.get(key, TTL_PX)
+    if hit:
+        return v
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        out = dict(zip(codes, ex.map(_fetch_one_mf_nav, codes)))
+    CACHE.set(key, out)
+    return out
+
+
 def fetch_last_prices(symbols: list[str]) -> dict:
     """{symbol: {"last", "prev", "spark"}} from one cached batch download.
-    'spark' is up to ~22 recent daily closes for a per-holding sparkline."""
+    'spark' is up to ~22 recent daily closes for a per-holding sparkline.
+    All-digit symbols are AMFI scheme codes, priced from mutual-fund NAV."""
     syms = sorted({s.upper() for s in symbols})
     if not syms: return {}
     key = "px:" + ",".join(syms)
     hit, v = CACHE.get(key, TTL_PX)
     if hit: return v
 
+    mf_codes = [s for s in syms if _is_mf_code(s)]
+    yf_syms = [s for s in syms if not _is_mf_code(s)]
     out: dict = {}
-    try:
-        multi = len(syms) > 1
-        raw = yf.download(syms, period="1mo", progress=False, timeout=15,
-                          group_by="ticker" if multi else "column", auto_adjust=False)
-        for s in syms:
-            try:
-                closes = (raw[s]["Close"] if multi else _flatten(raw)["Close"]).dropna()
-                last = float(closes.iloc[-1])
-                prev = float(closes.iloc[-2]) if len(closes) >= 2 else last
-                spark = [round(float(x), 2) for x in closes.iloc[-22:].tolist()]
-                out[s] = {"last": last, "prev": prev, "spark": spark}
-            except Exception:
-                out[s] = None
-    except Exception as exc:
-        log.warning("Price batch fetch failed: %s", exc)
-        out = {s: None for s in syms}
+    if mf_codes:
+        out.update(fetch_mf_navs(mf_codes))              # {code: {..,"name"} | None}
+    if yf_syms:
+        try:
+            multi = len(yf_syms) > 1
+            raw = yf.download(yf_syms, period="1mo", progress=False, timeout=15,
+                              group_by="ticker" if multi else "column", auto_adjust=False)
+            for s in yf_syms:
+                try:
+                    closes = (raw[s]["Close"] if multi else _flatten(raw)["Close"]).dropna()
+                    last = float(closes.iloc[-1])
+                    prev = float(closes.iloc[-2]) if len(closes) >= 2 else last
+                    spark = [round(float(x), 2) for x in closes.iloc[-22:].tolist()]
+                    out[s] = {"last": last, "prev": prev, "spark": spark}
+                except Exception:
+                    out[s] = None
+        except Exception as exc:
+            log.warning("Price batch fetch failed: %s", exc)
+            for s in yf_syms:
+                out.setdefault(s, None)
     CACHE.set(key, out)
     return out
 
@@ -574,11 +630,18 @@ def save_booked(doc: dict) -> None:
 
 
 def _normalize_holding_symbol(sym: str, exch: str) -> str:
-    """NSE positions carry a .NS suffix; US positions are the bare ticker."""
+    """NSE positions carry a .NS suffix; US positions (stocks & funds) are the
+    bare ticker; Indian mutual funds (MF) are stored as their AMFI scheme code."""
+    if exch == "MF":
+        code = sym.strip()
+        if not code.isdigit():
+            raise HTTPException(400, "Indian mutual funds are added by their numeric "
+                                     "AMFI scheme code (e.g. 120503).")
+        return code
     s = sym.strip().upper()
     if not _SYMBOL_RE.match(s):
         raise HTTPException(400, f"Invalid symbol '{sym}'.")
-    if exch == "US":
+    if exch in ("US", "USMF"):
         return s.replace(".NS", "").replace(".BO", "")
     return s if s.endswith((".NS", ".BO")) else s + ".NS"
 
@@ -595,15 +658,18 @@ def add_position(pos: PositionIn):
     """Add a holding (or accumulate into an existing one at a weighted-average
     cost). Validates the ticker by requiring a live price before saving."""
     exch = pos.exchange.strip().upper()
-    if exch not in ("NSE", "US"):
-        raise HTTPException(400, "exchange must be 'NSE' or 'US'.")
+    if exch not in ("NSE", "US", "MF", "USMF"):
+        raise HTTPException(400, "exchange must be 'NSE', 'US', 'MF' (Indian fund) or 'USMF'.")
     if pos.qty <= 0 or pos.avg_price <= 0:
         raise HTTPException(400, "qty and avg_price must be positive.")
     sym = _normalize_holding_symbol(pos.symbol, exch)
 
-    if fetch_last_prices([sym]).get(sym) is None:
-        raise HTTPException(422, f"No live price found for '{sym}'. Check the ticker "
-                                 f"(NSE uses the yfinance NSE name, US uses the plain ticker).")
+    px = fetch_last_prices([sym]).get(sym)
+    if px is None:
+        hint = ("Check the AMFI scheme code at mfapi.in." if exch == "MF"
+                else "Check the ticker (NSE uses the yfinance NSE name; US/US funds use the plain ticker).")
+        raise HTTPException(422, f"No live price/NAV found for '{sym}'. {hint}")
+    name = px.get("name")                               # mutual funds carry a scheme name
 
     doc = load_holdings()
     for p in doc["positions"]:
@@ -613,10 +679,14 @@ def add_position(pos: PositionIn):
             nq = oq + pos.qty
             p["avg_price"] = round((oq * oa + pos.qty * pos.avg_price) / nq, 4)
             p["qty"] = round(nq, 4)
+            if name:
+                p["name"] = name
             break
     else:
-        doc["positions"].append({"symbol": sym, "exchange": exch,
-                                 "qty": pos.qty, "avg_price": pos.avg_price})
+        new = {"symbol": sym, "exchange": exch, "qty": pos.qty, "avg_price": pos.avg_price}
+        if name:
+            new["name"] = name
+        doc["positions"].append(new)
     save_holdings(doc)
     return {"ok": True, "symbol": sym, "positions": doc["positions"]}
 
@@ -695,11 +765,12 @@ def portfolio():
     for p in positions:
         sym = str(p["symbol"]).upper()
         exch = str(p.get("exchange", "NSE")).upper()
-        is_us = exch == "US"
+        is_usd = exch in ("US", "USMF")
+        is_fund = exch in ("MF", "USMF")
         qty = float(p.get("qty", 0))
         avg = float(p.get("avg_price", 0))
-        ccy = "USD" if is_us else "INR"
-        fxm = rate if is_us else 1.0            # native → INR multiplier
+        ccy = "USD" if is_usd else "INR"
+        fxm = rate if is_usd else 1.0           # native → INR multiplier
 
         px = prices.get(sym)
         if px is None:
@@ -717,12 +788,13 @@ def portfolio():
         tot_inv += invested_inr
         tot_val += value_inr
         tot_day += day_inr
-        alloc["US" if is_us else "NSE"] += value_inr
+        alloc["US" if is_usd else "NSE"] += value_inr
 
         holdings.append({
             "symbol": sym.replace(".NS", "").replace(".BO", ""),
+            "name": p.get("name"), "is_fund": is_fund,
             "exchange": exch, "currency": ccy, "qty": round(qty, 4),
-            "avg_price": round(avg, 2), "last_price": round(last, 2),
+            "avg_price": round(avg, 4 if is_fund else 2), "last_price": round(last, 4 if is_fund else 2),
             "invested_inr": round(invested_inr, 2), "value_inr": round(value_inr, 2),
             "pnl_inr": round(pnl_inr, 2),
             "pnl_pct": round((last / avg - 1) * 100, 2) if avg else 0.0,
@@ -802,7 +874,9 @@ def dividends():
 
     fx = fetch_usdinr()
     rate = float(fx["rate"])
-    divmap = fetch_dividends_ttm([p["symbol"] for p in positions])
+    # dividend/share only applies to stocks — mutual funds don't distribute per-unit
+    divmap = fetch_dividends_ttm([p["symbol"] for p in positions
+                                  if str(p.get("exchange", "NSE")).upper() not in ("MF", "USMF")])
     prices = fetch_last_prices([p["symbol"] for p in positions])   # cache hit if /portfolio just ran
 
     rows = []
@@ -810,7 +884,7 @@ def dividends():
     for p in positions:
         sym = str(p["symbol"]).upper()
         exch = str(p.get("exchange", "NSE")).upper()
-        is_us = exch == "US"
+        is_us = exch in ("US", "USMF")
         fxm = rate if is_us else 1.0
         qty = float(p.get("qty", 0))
         avg = float(p.get("avg_price", 0))
@@ -911,24 +985,31 @@ def allocation():
     fx = fetch_usdinr()
     rate = float(fx["rate"])
     prices = fetch_last_prices([p["symbol"] for p in positions])
-    secmap = sectors_for([str(p["symbol"]).upper() for p in positions])
+    # funds don't have a stock sector — only look up the equity holdings
+    secmap = sectors_for([str(p["symbol"]).upper() for p in positions
+                          if str(p.get("exchange", "NSE")).upper() not in ("MF", "USMF")])
 
     total = 0.0
     per, mkt, sec, sym_industry, sym_sector = [], {"NSE": 0.0, "US": 0.0}, {}, {}, {}
     for p in positions:
         sym = str(p["symbol"]).upper()
         exch = str(p.get("exchange", "NSE")).upper()
-        is_us = exch == "US"
-        fxm = rate if is_us else 1.0
+        is_usd = exch in ("US", "USMF")
+        is_fund = exch in ("MF", "USMF")
+        fxm = rate if is_usd else 1.0
         qty, avg = float(p.get("qty", 0)), float(p.get("avg_price", 0))
         px = prices.get(sym)
         last = px["last"] if px else avg
         val = qty * last * fxm
         total += val
-        mkt["US" if is_us else "NSE"] += val
-        d = secmap.get(sym) or {}
-        sector = d.get("sector") or "ETF / Other"          # broad bucket for the donut
-        industry = d.get("industry") or d.get("sector") or "ETF / Other"  # specific, per stock
+        mkt["US" if is_usd else "NSE"] += val
+        if is_fund:
+            sector = "Mutual Funds"
+            industry = p.get("name") or "Mutual Fund"
+        else:
+            d = secmap.get(sym) or {}
+            sector = d.get("sector") or "ETF / Other"          # broad bucket for the donut
+            industry = d.get("industry") or d.get("sector") or "ETF / Other"  # specific, per stock
         sec[sector] = sec.get(sector, 0.0) + val
         disp = sym.replace(".NS", "").replace(".BO", "")
         sym_industry[disp] = industry
@@ -990,7 +1071,13 @@ def portfolio_history(months: int = Query(default=6, ge=1, le=24)):
         return {"curve": [], "risk": {}, "disclaimer": DISCLAIMER}
 
     rate = float(fetch_usdinr()["rate"])
-    held = sorted({str(p["symbol"]).upper() for p in positions})
+    # Indian mutual funds (AMFI codes) aren't on yfinance — leave them out of the
+    # reconstructed equity curve; the stock/US-fund book still charts.
+    held = sorted({str(p["symbol"]).upper() for p in positions
+                   if not _is_mf_code(str(p["symbol"]))})
+    if not held:
+        return {"curve": [], "risk": {}, "disclaimer": DISCLAIMER,
+                "note": "Only mutual-fund holdings — equity curve not available."}
     try:
         raw = yf.download(held + ["^NSEI"], period=f"{months}mo", progress=False,
                           timeout=40, group_by="ticker", auto_adjust=False)
@@ -1019,7 +1106,7 @@ def portfolio_history(months: int = Query(default=6, ge=1, le=24)):
     for p in positions:
         s = str(p["symbol"]).upper()
         if s in stock_cols:
-            fxm = rate if str(p.get("exchange", "NSE")).upper() == "US" else 1.0
+            fxm = rate if str(p.get("exchange", "NSE")).upper() in ("US", "USMF") else 1.0
             weights[s] = weights.get(s, 0.0) + float(p.get("qty", 0)) * fxm
     w = pd.Series(weights)
     pv = (common[list(weights)] * w).sum(axis=1)
@@ -1082,8 +1169,14 @@ def alerts(dma: int = Query(default=50, ge=5, le=200),
         return cached
 
     rate = float(fetch_usdinr()["rate"])
-    posmap = {str(p["symbol"]).upper(): p for p in positions}
+    # Indian mutual funds (AMFI codes) aren't on yfinance and a DMA sell signal
+    # doesn't apply to a fund NAV — exclude them from the alert scan.
+    posmap = {str(p["symbol"]).upper(): p for p in positions
+              if not _is_mf_code(str(p["symbol"]))}
     syms = sorted(posmap)
+    if not syms:
+        return {"dma": dma, "confirm": confirm, "below": [],
+                "summary": {"n_below": 0, "n_confirmed": 0, "n_holdings": 0}, "disclaimer": DISCLAIMER}
     months = max(4, dma // 18 + 2)          # enough sessions for the average + buffer
     try:
         raw = yf.download(syms, period=f"{months}mo", progress=False, timeout=40,
@@ -1113,7 +1206,7 @@ def alerts(dma: int = Query(default=50, ge=5, le=200),
                 break
         p = posmap[s]
         exch = str(p.get("exchange", "NSE")).upper()
-        fxm = rate if exch == "US" else 1.0
+        fxm = rate if exch in ("US", "USMF") else 1.0
         below.append({
             "symbol": s.replace(".NS", "").replace(".BO", ""),
             "exchange": exch,
@@ -1172,7 +1265,7 @@ def _booking_row(t: dict) -> dict:
         "id": t.get("id"),
         "symbol": str(t.get("symbol", "")).replace(".NS", "").replace(".BO", ""),
         "exchange": t.get("exchange", "NSE"),
-        "currency": "USD" if t.get("exchange") == "US" else "INR",
+        "currency": "USD" if str(t.get("exchange", "")).upper() in ("US", "USMF") else "INR",
         "qty": round(qty, 4), "buy_price": round(buy, 2), "sell_price": round(sell, 2),
         "date": t.get("date"), "note": t.get("note", ""), "fx_rate": round(fx, 4),
         "proceeds_inr": round(sell * qty * fx, 2),
@@ -1221,12 +1314,12 @@ def add_booking(b: BookingIn):
     """Record a realized (booked) trade. Captures the live USDINR for US sells so
     realized INR is locked at booking. Optionally reduces the matching holding."""
     exch = b.exchange.strip().upper()
-    if exch not in ("NSE", "US"):
-        raise HTTPException(400, "exchange must be 'NSE' or 'US'.")
+    if exch not in ("NSE", "US", "MF", "USMF"):
+        raise HTTPException(400, "exchange must be 'NSE', 'US', 'MF' (Indian fund) or 'USMF'.")
     if b.qty <= 0 or b.buy_price <= 0 or b.sell_price <= 0:
         raise HTTPException(400, "qty, buy_price and sell_price must be positive.")
     sym = _normalize_holding_symbol(b.symbol, exch)
-    fx = float(fetch_usdinr()["rate"]) if exch == "US" else 1.0
+    fx = float(fetch_usdinr()["rate"]) if exch in ("US", "USMF") else 1.0
     trade = {
         "id": uuid.uuid4().hex[:12],
         "symbol": sym, "exchange": exch, "qty": b.qty,
