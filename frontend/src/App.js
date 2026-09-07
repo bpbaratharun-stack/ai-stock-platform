@@ -82,7 +82,7 @@ function Navbar() {
     return <Link to={p} style={{ color: a ? "#00d4ff" : "#94a3b8", textDecoration: "none", fontWeight: 700, fontSize: 11, padding: "9px 18px", background: a ? "rgba(0,212,255,0.1)" : "rgba(30,41,59,0.4)", borderRadius: 6, border: `1px solid ${a ? "#00d4ff" : "#1e293b"}`, fontFamily: "JetBrains Mono", whiteSpace: "nowrap" }}>{l}</Link>;
   };
   return <div style={{ display: "flex", gap: 10, flexWrap: "wrap", background: "#0b0f19", padding: "12px 16px", borderRadius: 8, border: "1px solid #1e293b", marginBottom: 24 }}>
-    {link("/v2", "✨ NEW LOOK")}{link("/portfolio", "🧮 MY PORTFOLIO")}{link("/booked", "💰 PROFIT BOOKING")}{link("/", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}{link("/top", "🏆 TOP PERFORMERS")}{link("/vcp", "🔬 VCP BREAKOUTS")}
+    {link("/", "✨ PORTFOLIO")}{link("/portfolio", "🧮 CLASSIC PORTFOLIO")}{link("/booked", "💰 CLASSIC BOOKING")}{link("/profile", "🔎 FACTOR PROFILE")}{link("/screener", "🛰 UNIVERSE SCREENER")}{link("/breakouts", "🚀 WEEKLY BREAKOUTS")}{link("/top", "🏆 TOP PERFORMERS")}{link("/vcp", "🔬 VCP BREAKOUTS")}
   </div>;
 }
 
@@ -1610,7 +1610,8 @@ function Shell() {
   const loc = useLocation();
   // The reskinned Portfolio (/v2) is a full-page light view — render it outside
   // the dark research shell so it isn't framed by the terminal chrome.
-  if (loc.pathname === "/v2") return <PortfolioV2 />;
+  // The reskinned Portfolio is now the default landing (/) as well as /v2.
+  if (loc.pathname === "/" || loc.pathname === "/v2") return <PortfolioV2 />;
   if (loc.pathname === "/v2/booked") return <BookingV2 />;
   return (
     <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: 24, fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box" }}>
@@ -1622,7 +1623,7 @@ function Shell() {
       <Routes>
         <Route path="/portfolio" element={<PortfolioView />} />
         <Route path="/booked" element={<BookedView />} />
-        <Route path="/" element={<ProfileView />} />
+        <Route path="/profile" element={<ProfileView />} />
         <Route path="/screener" element={<ScreenerView />} />
         <Route path="/breakouts" element={<WeeklyBreakoutsView />} />
         <Route path="/top" element={<TopPerformersView />} />

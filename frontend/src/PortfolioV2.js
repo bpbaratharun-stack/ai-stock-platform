@@ -252,14 +252,14 @@ export default function PortfolioV2() {
         <header className="top">
           <div className="brand">
             <h1>Portfolio</h1>
-            <nav className="nav"><Link className="on" to="/v2">Overview</Link><Link to="/v2/booked">Booking</Link></nav>
+            <nav className="nav"><Link className="on" to="/">Overview</Link><Link to="/v2/booked">Booking</Link></nav>
           </div>
           <div className="controls">
             <div className="seg">
               {["INR", "USD"].map((x) => <button key={x} className={disp === x ? "on" : ""} onClick={() => setDisp(x)}>{x === "INR" ? "₹ INR" : "$ USD"}</button>)}
             </div>
             <button className="icon" onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))} title="Toggle theme">◐</button>
-            <Link className="icon" to="/portfolio" title="Classic view">Classic</Link>
+            <Link className="icon" to="/profile" title="Research terminal">Research</Link>
           </div>
         </header>
 
