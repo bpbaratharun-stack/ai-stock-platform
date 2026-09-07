@@ -174,6 +174,7 @@ export default function PortfolioV2() {
   const [booked, setBooked] = useState(null);
   const [disp, setDisp] = useState("INR");
   const [theme, setTheme] = useState("light");
+  const [showAllH, setShowAllH] = useState(false);
 
   useEffect(() => {
     const l = document.createElement("link"); l.rel = "stylesheet"; l.href = FONTS;
@@ -357,7 +358,7 @@ export default function PortfolioV2() {
             <table className="num">
               <thead><tr><th className="l">Stock</th><th>Value</th><th>Weight</th><th>Day</th><th>P&amp;L</th><th>Div/yr</th></tr></thead>
               <tbody>
-                {(data.holdings ?? []).slice(0, 12).map((h) => {
+                {(showAllH ? (data.holdings ?? []) : (data.holdings ?? []).slice(0, 12)).map((h) => {
                   const ind = alloc?.industries?.[h.symbol] || "—";
                   const wt = alloc?.total_value_inr ? (h.value_inr / alloc.total_value_inr) * 100 : 0;
                   const dv = div?.holdings?.find((x) => x.symbol === h.symbol);
@@ -376,6 +377,13 @@ export default function PortfolioV2() {
               </tbody>
             </table>
           </div>
+          {(data.holdings ?? []).length > 12 && (
+            <div style={{ padding: "12px 20px 18px", textAlign: "center" }}>
+              <button className="btn" onClick={() => setShowAllH((v) => !v)}>
+                {showAllH ? "Show top 12" : `Show all ${data.holdings.length} holdings`}
+              </button>
+            </div>
+          )}
         </section>
 
         <div className="foot">Snowball-inspired reskin · live data · descriptive reporting only — not investment advice.</div>
