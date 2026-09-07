@@ -175,16 +175,62 @@ export default function PortfolioV2() {
   const [disp, setDisp] = useState("INR");
   const [theme, setTheme] = useState("light");
   const [showAllH, setShowAllH] = useState(false);
+  // holdings editing
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ symbol: "", exchange: "NSE", qty: "", avg_price: "" });
+  const [editKey, setEditKey] = useState(null);            // `${symbol}|${exchange}` being edited
+  const [editVals, setEditVals] = useState({ qty: "", avg_price: "" });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
 
   useEffect(() => {
     const l = document.createElement("link"); l.rel = "stylesheet"; l.href = FONTS;
     document.head.appendChild(l); return () => { try { document.head.removeChild(l); } catch {} };
   }, []);
-  useEffect(() => {
-    const g = (u, s) => axios.get(`${API_BASE}${u}`).then((r) => s(r.data)).catch(() => {});
+  const loadAll = React.useCallback(() => {
+    const g = (u, set) => axios.get(`${API_BASE}${u}`).then((r) => set(r.data)).catch(() => {});
     g("/portfolio", setData); g("/allocation", setAlloc); g("/dividends", setDiv);
     g("/portfolio-history?months=6", setHist); g("/alerts?dma=50&confirm=2", setAlerts); g("/booked", setBooked);
   }, []);
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const addShares = async (e) => {
+    e?.preventDefault();
+    const qty = parseFloat(form.qty), avg = parseFloat(form.avg_price);
+    if (!form.symbol.trim() || !(qty > 0) || !(avg > 0)) { setMsg({ err: true, text: "Enter a symbol and positive quantity and average price." }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      const { data: res } = await axios.post(`${API_BASE}/portfolio/positions`, { symbol: form.symbol.trim(), exchange: form.exchange, qty, avg_price: avg });
+      setForm((f) => ({ symbol: "", exchange: f.exchange, qty: "", avg_price: "" }));
+      setMsg({ err: false, text: `Added ${res.symbol.replace(/\.NS$/, "")} to your portfolio.` });
+      loadAll();
+    } catch (err) { setMsg({ err: true, text: err?.response?.data?.detail ?? "Could not add the position." }); }
+    finally { setBusy(false); }
+  };
+
+  const saveEdit = async (h) => {
+    const qty = parseFloat(editVals.qty), avg = parseFloat(editVals.avg_price);
+    if (!(qty > 0) || !(avg > 0)) { setMsg({ err: true, text: "Quantity and average price must be positive." }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      await axios.put(`${API_BASE}/portfolio/positions/${h.symbol}`, { qty, avg_price: avg, exchange: h.exchange });
+      setEditKey(null);
+      setMsg({ err: false, text: `Updated ${h.symbol}.` });
+      loadAll();
+    } catch (err) { setMsg({ err: true, text: err?.response?.data?.detail ?? "Could not update." }); }
+    finally { setBusy(false); }
+  };
+
+  const removePos = async (h) => {
+    if (!window.confirm(`Remove ${h.symbol} (${h.exchange}) from your portfolio? This deletes the position — booked history is unaffected.`)) return;
+    setBusy(true); setMsg(null);
+    try {
+      await axios.delete(`${API_BASE}/portfolio/positions/${h.symbol}`, { params: { exchange: h.exchange } });
+      setMsg({ err: false, text: `Removed ${h.symbol}.` });
+      loadAll();
+    } catch (err) { setMsg({ err: true, text: err?.response?.data?.detail ?? "Could not remove." }); }
+    finally { setBusy(false); }
+  };
 
   const fx = data?.fx?.rate ?? 1;
   const base = (inr) => disp === "INR"
@@ -353,24 +399,77 @@ export default function PortfolioV2() {
         </section>
 
         <section className="panel">
-          <div className="tbl-h"><h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>Holdings</h3><span className="eyebrow">{s.n_holdings} positions · by value</span></div>
+          <div className="tbl-h">
+            <h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>Holdings</h3>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span className="eyebrow">{s.n_holdings} positions · by value</span>
+              <button className="btn primary" onClick={() => { setShowAdd((v) => !v); setMsg(null); }}>{showAdd ? "Close" : "+ Add shares"}</button>
+            </div>
+          </div>
+          {showAdd && (
+            <form className="form" onSubmit={addShares} style={{ borderBottom: "1px solid var(--line)" }}>
+              <div className="field"><label>Symbol</label>
+                <input value={form.symbol} onChange={(e) => setForm((f) => ({ ...f, symbol: e.target.value.toUpperCase() }))} placeholder="e.g. TMCV" style={{ width: 130 }} />
+              </div>
+              <div className="field"><label>Exchange</label>
+                <select value={form.exchange} onChange={(e) => setForm((f) => ({ ...f, exchange: e.target.value }))}>
+                  <option value="NSE">NSE</option><option value="US">US</option>
+                </select>
+              </div>
+              <div className="field"><label>Quantity</label>
+                <input value={form.qty} onChange={(e) => setForm((f) => ({ ...f, qty: e.target.value }))} placeholder="0" style={{ width: 90 }} inputMode="decimal" />
+              </div>
+              <div className="field"><label>Avg buy price</label>
+                <input value={form.avg_price} onChange={(e) => setForm((f) => ({ ...f, avg_price: e.target.value }))} placeholder="0" style={{ width: 110 }} inputMode="decimal" />
+              </div>
+              <button className="btn primary" type="submit" disabled={busy}>{busy ? "Adding…" : "Add"}</button>
+              <span className="eyebrow" style={{ textTransform: "none", letterSpacing: 0 }}>Adding an existing ticker averages into it.</span>
+            </form>
+          )}
+          {msg && <div className={`msg ${msg.err ? "neg" : "pos"}`}>{msg.text}</div>}
           <div style={{ overflowX: "auto" }}>
             <table className="num">
-              <thead><tr><th className="l">Stock</th><th>Value</th><th>Weight</th><th>Day</th><th>P&amp;L</th><th>Div/yr</th></tr></thead>
+              <thead><tr><th className="l">Stock</th><th>Qty</th><th>Value</th><th>Weight</th><th>Day</th><th>P&amp;L</th><th>Div/yr</th><th></th></tr></thead>
               <tbody>
                 {(showAllH ? (data.holdings ?? []) : (data.holdings ?? []).slice(0, 12)).map((h) => {
                   const ind = alloc?.industries?.[h.symbol] || "—";
                   const wt = alloc?.total_value_inr ? (h.value_inr / alloc.total_value_inr) * 100 : 0;
                   const dv = div?.holdings?.find((x) => x.symbol === h.symbol);
                   const al = alertBy[h.symbol];
+                  const key = `${h.symbol}|${h.exchange}`;
+                  const cur = h.currency === "USD" ? "$" : "₹";
+                  if (editKey === key) {
+                    return (
+                      <tr key={key}>
+                        <td className="l"><div className="stk"><div className="s">{h.symbol}<span className={`badge ${h.exchange === "US" ? "us" : "nse"}`}>{h.exchange}</span></div></div></td>
+                        <td colSpan={5}>
+                          <div className="wcell" style={{ justifyContent: "flex-start", gap: 12 }}>
+                            <span className="field" style={{ display: "flex", alignItems: "center", gap: 6 }}><label style={{ margin: 0 }}>Qty</label>
+                              <input value={editVals.qty} onChange={(e) => setEditVals((v) => ({ ...v, qty: e.target.value }))} style={{ width: 90 }} inputMode="decimal" /></span>
+                            <span className="field" style={{ display: "flex", alignItems: "center", gap: 6 }}><label style={{ margin: 0 }}>Avg {cur}</label>
+                              <input value={editVals.avg_price} onChange={(e) => setEditVals((v) => ({ ...v, avg_price: e.target.value }))} style={{ width: 100 }} inputMode="decimal" /></span>
+                          </div>
+                        </td>
+                        <td><div className="wcell" style={{ gap: 6 }}>
+                          <button className="btn primary" onClick={() => saveEdit(h)} disabled={busy}>Save</button>
+                          <button className="btn" onClick={() => setEditKey(null)}>Cancel</button>
+                        </div></td>
+                      </tr>
+                    );
+                  }
                   return (
-                    <tr key={h.symbol + h.exchange}>
+                    <tr key={key}>
                       <td className="l"><div className="stk"><div className="s">{h.symbol}{al?.confirmed && <span className={`dma${al.fresh ? " f" : ""}`}>▼50D</span>}</div><div className="i">{ind}</div></div></td>
+                      <td title={`avg ${cur}${h.avg_price} · last ${cur}${h.last_price}`}>{h.qty}</td>
                       <td>{base(h.value_inr)}</td>
                       <td><div className="wcell"><div className="wbar"><span style={{ width: `${Math.min(wt / (c?.largest?.pct || 10) * 100, 100)}%` }} /></div>{wt.toFixed(1)}%</div></td>
                       <td className={h.day_change_pct >= 0 ? "pos" : "neg"}>{h.day_change_pct >= 0 ? "+" : ""}{h.day_change_pct}%</td>
                       <td className={h.pnl_inr >= 0 ? "pos" : "neg"}>{signed(h.pnl_inr)}<div className={`i ${h.pnl_pct >= 0 ? "pos" : "neg"}`}>{h.pnl_pct >= 0 ? "+" : ""}{h.pnl_pct}%</div></td>
                       <td style={{ color: "var(--muted)" }}>{dv && dv.annual_income_inr > 0 ? base(dv.annual_income_inr) : "—"}</td>
+                      <td><div className="wcell" style={{ gap: 4 }}>
+                        <button className="del" title="Edit qty / avg price" onClick={() => { setEditKey(key); setEditVals({ qty: String(h.qty), avg_price: String(h.avg_price) }); setMsg(null); }}>✎</button>
+                        <button className="del" title="Remove position" onClick={() => removePos(h)}>✕</button>
+                      </div></td>
                     </tr>
                   );
                 })}
