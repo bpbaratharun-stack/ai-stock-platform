@@ -175,6 +175,7 @@ export default function PortfolioV2() {
   const [disp, setDisp] = useState("INR");
   const [theme, setTheme] = useState("light");
   const [showAllH, setShowAllH] = useState(false);
+  const [query, setQuery] = useState("");
   // holdings editing
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ symbol: "", exchange: "NSE", qty: "", avg_price: "" });
@@ -401,7 +402,8 @@ export default function PortfolioV2() {
         <section className="panel">
           <div className="tbl-h">
             <h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>Holdings</h3>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search stock…" style={{ width: 150 }} />
               <span className="eyebrow">{s.n_holdings} positions · by value</span>
               <button className="btn primary" onClick={() => { setShowAdd((v) => !v); setMsg(null); }}>{showAdd ? "Close" : "+ Add shares"}</button>
             </div>
@@ -431,7 +433,17 @@ export default function PortfolioV2() {
             <table className="num">
               <thead><tr><th className="l">Stock</th><th>Qty</th><th>Value</th><th>Weight</th><th>Day</th><th>P&amp;L</th><th>Div/yr</th><th></th></tr></thead>
               <tbody>
-                {(showAllH ? (data.holdings ?? []) : (data.holdings ?? []).slice(0, 12)).map((h) => {
+                {(() => {
+                  const all = data.holdings ?? [];
+                  const q = query.trim().toLowerCase();
+                  const matched = q
+                    ? all.filter((h) => h.symbol.toLowerCase().includes(q) || (alloc?.industries?.[h.symbol] || "").toLowerCase().includes(q))
+                    : all;
+                  const rows = q ? matched : (showAllH ? matched : matched.slice(0, 12));
+                  if (rows.length === 0) {
+                    return <tr><td className="l" colSpan={8} style={{ color: "var(--muted)", padding: "24px 14px" }}>No holdings match “{query}”.</td></tr>;
+                  }
+                  return rows.map((h) => {
                   const ind = alloc?.industries?.[h.symbol] || "—";
                   const wt = alloc?.total_value_inr ? (h.value_inr / alloc.total_value_inr) * 100 : 0;
                   const dv = div?.holdings?.find((x) => x.symbol === h.symbol);
@@ -472,11 +484,12 @@ export default function PortfolioV2() {
                       </div></td>
                     </tr>
                   );
-                })}
+                  });
+                })()}
               </tbody>
             </table>
           </div>
-          {(data.holdings ?? []).length > 12 && (
+          {!query.trim() && (data.holdings ?? []).length > 12 && (
             <div style={{ padding: "12px 20px 18px", textAlign: "center" }}>
               <button className="btn" onClick={() => setShowAllH((v) => !v)}>
                 {showAllH ? "Show top 12" : `Show all ${data.holdings.length} holdings`}
