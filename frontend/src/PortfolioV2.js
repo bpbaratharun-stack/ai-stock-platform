@@ -122,6 +122,12 @@ export const PF2_CSS = `
 .pf .secrow{display:grid;grid-template-columns:10px 1fr auto;gap:9px;align-items:center;font-size:12.5px}
 .pf .secrow i{width:9px;height:9px;border-radius:3px}
 .pf .secrow .pc{color:var(--muted);font-weight:600}
+.pf .mvlist{display:flex;flex-direction:column}
+.pf .mvrow{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line2)}
+.pf .mvrow:last-child{border-bottom:0}
+.pf .mvrow .mvs{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pf .mvrow .mvp{font-weight:600;font-size:12.5px;min-width:64px;text-align:right}
+.pf .mvrow .mvv{font-weight:600;font-size:13px;min-width:88px;text-align:right}
 .pf .risk{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:6px}
 .pf .risk .k{font-size:11px;color:var(--muted);font-weight:600}
 .pf .risk .val{font-size:19px;font-weight:600;margin-top:4px}
@@ -259,6 +265,23 @@ export default function PortfolioV2() {
   const tmData = (data.holdings ?? []).slice(0, 24).map((h) => ({ value: h.value_inr, sym: h.symbol, day: h.day_change_pct }));
   const alertBy = {}; (alerts?.below ?? []).forEach((a) => { alertBy[a.symbol] = a; });
 
+  // today's biggest rupee movers among current holdings
+  const moving = (data.holdings ?? []).filter((h) => !h.stale && h.day_change_inr);
+  const gainers = [...moving].filter((h) => h.day_change_inr > 0).sort((a, b) => b.day_change_inr - a.day_change_inr).slice(0, 5);
+  const losers = [...moving].filter((h) => h.day_change_inr < 0).sort((a, b) => a.day_change_inr - b.day_change_inr).slice(0, 5);
+  const moverLabel = (h) => (h.is_fund && h.name ? (h.name.length > 22 ? h.name.slice(0, 22) + "…" : h.name) : h.symbol);
+  const moverList = (rows, empty) => (
+    <div className="mvlist">
+      {rows.length === 0 ? <div className="risknote">{empty}</div> : rows.map((h) => (
+        <div className="mvrow" key={h.symbol + h.exchange} title={h.name || h.symbol}>
+          <span className="mvs">{moverLabel(h)}</span>
+          <span className={`mvp num ${h.day_change_pct >= 0 ? "pos" : "neg"}`}>{h.day_change_pct >= 0 ? "+" : ""}{h.day_change_pct}%</span>
+          <span className={`mvv num ${h.day_change_inr >= 0 ? "pos" : "neg"}`}>{signed(h.day_change_inr)}</span>
+        </div>
+      ))}
+    </div>
+  );
+
   const dayColor = (d) => d >= 0
     ? `rgba(15,160,90,${Math.min(0.35 + Math.abs(d) / 6, 0.95)})`
     : `rgba(225,71,66,${Math.min(0.35 + Math.abs(d) / 6, 0.95)})`;
@@ -348,6 +371,19 @@ export default function PortfolioV2() {
             <div className="chips num">
               {alerts.below.filter((a) => a.confirmed).slice(0, 5).map((a) => <span key={a.symbol} className="chip">{a.symbol} {a.pct_from_dma}%</span>)}
               {alerts.summary.n_confirmed > 5 && <span className="chip more">+{alerts.summary.n_confirmed - 5} more</span>}
+            </div>
+          </section>
+        )}
+
+        {moving.length > 0 && (
+          <section className="grid two">
+            <div className="panel">
+              <div className="cardh"><h3>Today's top gainers</h3><span className="eyebrow">by ₹ change</span></div>
+              <div className="cardb">{moverList(gainers, "No holdings are up today.")}</div>
+            </div>
+            <div className="panel">
+              <div className="cardh"><h3>Today's top losers</h3><span className="eyebrow">by ₹ change</span></div>
+              <div className="cardb">{moverList(losers, "No holdings are down today.")}</div>
             </div>
           </section>
         )}
