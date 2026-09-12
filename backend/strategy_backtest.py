@@ -52,8 +52,29 @@ def prepare(cfg) -> pd.DataFrame:
 
     df["universe"] = (df["sma200"].notna() & (df["close"] >= cfg.min_price)
                       & (df["med_turnover"] >= cfg.min_turnover_cr * RS_CR))
+
+    # --- variant A: BREAKOUT — the live scanner's checklist score -------------
     hot = df["universe"] & (df["score"] >= cfg.min_score)
-    df["signal"] = hot & ~g["score"].shift(1).ge(cfg.min_score).fillna(False)  # fresh trigger
+    df["signal_breakout"] = hot & ~g["score"].shift(1).ge(cfg.min_score).fillna(False)
+
+    # --- variant B: PULLBACK — buy the dip inside an intact uptrend ------------
+    # The breakout checklist buys names that have already moved (extended); this
+    # keeps the same trend context but enters on a quiet dip to the 20-DMA.
+    df["hi20"] = g["close"].transform(lambda s: s.rolling(20, min_periods=10).max())
+    df["prev_close"] = g["close"].shift(1)
+    stack = ((df["sma20"] > df["sma50"]) & (df["sma50"] > df["sma100"])
+             & (df["sma100"] > df["sma200"]) & (df["sma50"] > df["sma50_prev"]))
+    pb = (stack
+          & (df["close"] > df["sma50"])                             # trend still intact
+          & (df["close"] / df["hi20"]).between(0.90, 0.97)          # 3-10% off the 20d high
+          & (df["close"] <= df["sma20"] * 1.03)                     # at / near the 20-DMA
+          & df["rsi"].between(40, 62)                               # cooled, not broken
+          & (df["vol_ratio"] < 1.0)                                 # quiet, light-volume dip
+          & (df["close"] > df["prev_close"]))                       # the dip is being bought
+    raw = df["universe"] & pb.fillna(False)
+    df["signal_pullback"] = raw & ~raw.groupby(df["symbol"], observed=True).shift(1).fillna(False)  # fresh trigger
+
+    df["signal"] = df["signal_pullback"] if cfg.variant == "pullback" else df["signal_breakout"]
     df["week"] = df["date"].dt.to_period("W-FRI")
     return df
 
@@ -68,8 +89,10 @@ def pick_signals(df: pd.DataFrame, cfg) -> pd.DataFrame:
 
 def report(df: pd.DataFrame, sig: pd.DataFrame, cfg):
     amt = cfg.amount
-    print(f"\n{'='*74}\nSTRATEGY BACKTEST — Rs {amt:,.0f} into each fresh setup "
-          f"(score >= {cfg.min_score}), entry next open\n{'='*74}")
+    rule = (f"PULLBACK (quiet dip to the 20-DMA in an intact uptrend)" if cfg.variant == "pullback"
+            else f"BREAKOUT checklist (score >= {cfg.min_score})")
+    print(f"\n{'='*74}\nSTRATEGY BACKTEST — Rs {amt:,.0f} into each fresh setup, entry next open"
+          f"\n  rule: {rule}\n{'='*74}")
     print(f"  signals: {len(sig):,} across {sig['week'].nunique():,} weeks  "
           f"({'top ' + str(cfg.top_per_day) + ' per day' if cfg.top_per_day else 'all fresh triggers'})")
     print(f"  universe gate: price >= Rs {cfg.min_price}, median turnover >= Rs {cfg.min_turnover_cr} cr\n")
@@ -139,6 +162,9 @@ def main():
     p.add_argument("--min-price", type=float, default=30.0)
     p.add_argument("--min-turnover-cr", type=float, default=2.0)
     p.add_argument("--date", type=str, default=None, help="Show one day's picks and their realized reward.")
+    p.add_argument("--variant", choices=["breakout", "pullback"], default="breakout",
+                   help="breakout = the live scanner's checklist score; pullback = buy a quiet dip "
+                        "to the 20-DMA inside an intact uptrend (default: breakout).")
     cfg = p.parse_args()
     df = prepare(cfg)
     if cfg.date:
