@@ -476,7 +476,7 @@ export default function PortfolioV2() {
           {msg && <div className={`msg ${msg.err ? "neg" : "pos"}`}>{msg.text}</div>}
           <div style={{ overflowX: "auto" }}>
             <table className="num">
-              <thead><tr><th className="l">Stock</th><th>Qty</th><th>Value</th><th>Weight</th><th>Day</th><th>P&amp;L</th><th>Div/yr</th><th></th></tr></thead>
+              <thead><tr><th className="l">Stock</th><th>Qty</th><th>Avg</th><th>LTP</th><th>Value</th><th>Weight</th><th>Day</th><th>P&amp;L</th><th>Div/yr</th><th></th></tr></thead>
               <tbody>
                 {(() => {
                   const all = data.holdings ?? [];
@@ -486,7 +486,7 @@ export default function PortfolioV2() {
                     : all;
                   const rows = q ? matched : (showAllH ? matched : matched.slice(0, 12));
                   if (rows.length === 0) {
-                    return <tr><td className="l" colSpan={8} style={{ color: "var(--muted)", padding: "24px 14px" }}>No holdings match “{query}”.</td></tr>;
+                    return <tr><td className="l" colSpan={10} style={{ color: "var(--muted)", padding: "24px 14px" }}>No holdings match “{query}”.</td></tr>;
                   }
                   return rows.map((h) => {
                   const ind = alloc?.industries?.[h.symbol] || "—";
@@ -501,7 +501,7 @@ export default function PortfolioV2() {
                     return (
                       <tr key={key}>
                         <td className="l"><div className="stk"><div className="s">{h.symbol}<span className={`badge ${h.exchange === "US" ? "us" : "nse"}`}>{h.exchange}</span></div></div></td>
-                        <td colSpan={5}>
+                        <td colSpan={8}>
                           <div className="wcell" style={{ justifyContent: "flex-start", gap: 12 }}>
                             <span className="field" style={{ display: "flex", alignItems: "center", gap: 6 }}><label style={{ margin: 0 }}>Qty</label>
                               <input value={editVals.qty} onChange={(e) => setEditVals((v) => ({ ...v, qty: e.target.value }))} style={{ width: 90 }} inputMode="decimal" /></span>
@@ -519,7 +519,9 @@ export default function PortfolioV2() {
                   return (
                     <tr key={key}>
                       <td className="l"><div className="stk"><div className="s" title={h.name || h.symbol}>{primaryLabel}{h.is_fund && <span className="badge fund">FUND</span>}{al?.confirmed && <span className={`dma${al.fresh ? " f" : ""}`}>▼50D</span>}</div><div className="i">{subLabel}</div></div></td>
-                      <td title={`avg ${cur}${h.avg_price} · last ${cur}${h.last_price}`}>{h.qty}</td>
+                      <td>{h.qty}</td>
+                      <td style={{ color: "var(--muted)" }}>{cur}{h.avg_price}</td>
+                      <td title={h.stale ? "no live price — showing cost basis" : ""}>{cur}{h.last_price}{h.stale && <span style={{ color: "var(--faint)", fontSize: 10 }}> ·stale</span>}</td>
                       <td>{base(h.value_inr)}</td>
                       <td><div className="wcell"><div className="wbar"><span style={{ width: `${Math.min(wt / (c?.largest?.pct || 10) * 100, 100)}%` }} /></div>{wt.toFixed(1)}%</div></td>
                       <td className={h.day_change_pct >= 0 ? "pos" : "neg"}>{h.day_change_pct >= 0 ? "+" : ""}{h.day_change_pct}%</td>
