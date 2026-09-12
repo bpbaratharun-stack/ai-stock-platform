@@ -106,6 +106,21 @@ export default function BookingV2() {
   const s = data.summary;
   const trades = data.trades ?? [];
 
+  // realized P&L grouped by calendar month (from each trade's booking date)
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const byMonth = {};
+  trades.forEach((t) => {
+    const key = (t.date || "").slice(0, 7);                 // YYYY-MM
+    if (!/^\d{4}-\d{2}$/.test(key)) return;
+    (byMonth[key] ||= { key, realized: 0, n: 0, wins: 0 });
+    byMonth[key].realized += t.realized_inr;
+    byMonth[key].n += 1;
+    if (t.realized_inr > 0) byMonth[key].wins += 1;
+  });
+  const months = Object.values(byMonth).sort((a, b) => b.key.localeCompare(a.key));
+  const maxAbs = Math.max(1, ...months.map((m) => Math.abs(m.realized)));
+  const monLabel = (k) => `${MON[+k.slice(5) - 1]} ${k.slice(0, 4)}`;
+
   const kpis = [
     { lbl: "Total realized", v: signed(s.realized_inr), cls: s.realized_inr >= 0 ? "pos" : "neg", m: `on ${base(s.cost_inr)} deployed` },
     { lbl: "Trades booked", v: String(s.n), m: `${s.wins} up · ${s.losses} down` },
@@ -159,6 +174,33 @@ export default function BookingV2() {
       </form>
       {msg && <div className={`msg ${msg.err ? "neg" : "pos"}`}>{msg.text}</div>}
     </div>
+
+    {months.length > 0 && (
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="tbl-h"><h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>Monthly realized P&amp;L</h3>
+          <span className="eyebrow">{months.length} month{months.length === 1 ? "" : "s"}</span></div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="num">
+            <thead><tr><th className="l">Month</th><th>Trades</th><th>Win rate</th><th></th><th>Realized</th></tr></thead>
+            <tbody>
+              {months.map((m) => (
+                <tr key={m.key}>
+                  <td className="l" style={{ fontWeight: 600 }}>{monLabel(m.key)}</td>
+                  <td style={{ color: "var(--muted)" }}>{m.n}</td>
+                  <td style={{ color: "var(--muted)" }}>{Math.round((m.wins / m.n) * 100)}%</td>
+                  <td style={{ width: "40%" }}>
+                    <div className="wbar" style={{ width: "100%", background: "transparent" }}>
+                      <span style={{ display: "block", height: 6, borderRadius: 4, width: `${Math.max((Math.abs(m.realized) / maxAbs) * 100, 3)}%`, background: m.realized >= 0 ? "var(--pos)" : "var(--neg)", marginLeft: "auto" }} />
+                    </div>
+                  </td>
+                  <td className={`num ${m.realized >= 0 ? "pos" : "neg"}`} style={{ fontWeight: 600 }}>{signed(m.realized)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )}
 
     <div className="panel">
       <div className="tbl-h"><h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>Realized ledger</h3>
