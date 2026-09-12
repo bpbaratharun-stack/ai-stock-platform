@@ -1236,6 +1236,67 @@ def alerts(dma: int = Query(default=50, ge=5, le=200),
     return result
 
 
+TTL_SCAN = 3600   # strategy scorecard cached 1h (heavy compute over the full panel)
+
+
+def _scan_row(r) -> dict:
+    def g(k, nd=2):
+        v = r.get(k)
+        return round(float(v), nd) if pd.notna(v) else None
+    return {
+        "symbol": r["symbol"], "sector": (r.get("sector") or None),
+        "score": g("score", 1), "close": g("close"),
+        "checklist": {
+            "trend": bool(r["trend_ok"]),
+            "sma_stack": int(r["align_bits"]),           # 0..4 of the stack inequalities
+            "rsi": bool(r["rsi_ok"]),
+            "macd": bool(r["macd_ok"]),
+            "volume": bool(r["vol_ok"]),
+            "vcp": bool(r["vcp_ok"]),
+            "breakout": bool(r["breakout_ok"]),
+            "risk_reward": bool(r["rr_ok"]),
+        },
+        "rsi": g("rsi", 1), "macd": g("macd", 2), "vol_ratio": g("vol_ratio", 2),
+        "sma20": g("sma20"), "sma50": g("sma50"), "sma100": g("sma100"), "sma200": g("sma200"),
+        "target_near": g("target_near"), "target_r4": g("target_r4"), "stop": g("stop"),
+        "risk_pct": g("risk_pct", 1), "reward_near_pct": g("reward_near_pct", 1),
+        "room_to_r4_pct": g("room_to_r4_pct", 1), "rr": g("rr", 2),
+        "ext_above_base_pct": g("ext_above_base_pct", 1),
+    }
+
+
+@app.get("/strategy-scan", operation_id="strategy_scan")
+def strategy_scan(top: int = Query(default=25, ge=1, le=100),
+                  min_rr: float = Query(default=2.0, ge=0),
+                  min_turnover_cr: float = Query(default=2.0, ge=0),
+                  min_price: float = Query(default=30.0, ge=0)):
+    """Descriptive daily technical-setup scorecard over the liquid NSE universe:
+    trend, 20/50/100/200 SMA stack, RSI + MACD, volume vs average, VCP contraction,
+    60-day breakout, nearby resistance, room toward the monthly R4 pivot, and
+    risk:reward (scored to R4). A mechanical screen — NOT advice or a signal."""
+    key = f"scan:{min_rr}:{min_turnover_cr}:{min_price}"
+    hit, cached = CACHE.get(key, TTL_SCAN)
+    if not hit:
+        import strategy_scan as ss
+        cfg = ss.Cfg(top=100, min_price=min_price,
+                     min_turnover_cr=min_turnover_cr, min_rr=min_rr)
+        try:
+            res = ss.build(cfg)
+        except FileNotFoundError:
+            raise HTTPException(503, "panel.parquet not found — run ingest_bhavcopy.py first.")
+        asof = str(pd.to_datetime(res["date"].max()).date()) if not res.empty else None
+        cached = {
+            "as_of": asof, "n_scored": int(len(res)),
+            "candidates": [_scan_row(r) for _, r in res.head(100).iterrows()],
+            "params": {"min_rr": min_rr, "min_turnover_cr": min_turnover_cr, "min_price": min_price},
+            "disclaimer": DISCLAIMER,
+        }
+        CACHE.set(key, cached)
+    out = dict(cached)
+    out["candidates"] = cached["candidates"][:top]
+    return out
+
+
 def _reduce_holding(sym: str, exch: str, qty: float):
     """Reduce a holding's quantity after a booked sell; remove it if fully closed."""
     try:
