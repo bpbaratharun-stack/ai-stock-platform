@@ -109,53 +109,60 @@ def score_latest(df: pd.DataFrame, cfg) -> pd.DataFrame:
     if last.empty:
         return last
 
-    c = last["close"]
-    # --- gates / graded features -------------------------------------------
-    last["trend_ok"] = (c > last["sma50"]) & (last["sma50"] > last["sma50_prev"])
-    align_bits = ((c > last["sma20"]).astype(int) + (last["sma20"] > last["sma50"]).astype(int)
-                  + (last["sma50"] > last["sma100"]).astype(int) + (last["sma100"] > last["sma200"]).astype(int))
-    last["align_bits"] = align_bits                            # 0..4
-    last["aligned"] = align_bits == 4
-    last["rsi_ok"] = last["rsi"].between(50, 78)
-    last["macd_ok"] = (last["macd"] > last["macd_sig"]) & (last["macd"] > 0)
-    last["vol_ratio"] = (last["volume"] / last["volavg50"]).replace([np.inf, -np.inf], np.nan)
-    last["vol_ok"] = last["vol_ratio"] >= 1.0
-    last["vcp_ok"] = last["atr_recent"] < last["atr_prev"]
-    last["breakout_ok"] = c >= last["base_high"] * 0.985
-    last["ext_above_base_pct"] = (c / last["base_high"] - 1) * 100
+    last = add_scores(last, cfg.min_rr)
 
-    # --- resistances, stop, risk:reward ------------------------------------
-    # nearby resistance = nearest level ABOVE price (the immediate obstacle);
-    # R4 = the monthly extension target (the swing goal). R:R is scored on R4.
+    # nearby resistance = nearest level ABOVE price (the immediate obstacle) —
+    # display only, so computed on the small live snapshot rather than history.
     def _nearby(row):
         ups = [row[k] for k in ("base_high", "R1", "R2", "R3", "R4")
                if pd.notna(row[k]) and row[k] > row["close"]]
         return min(ups) if ups else (row["R4"] if pd.notna(row["R4"]) else row["close"] * 1.1)
     last["target_near"] = last.apply(_nearby, axis=1)
-    last["target_r4"] = np.where(last["R4"].notna() & (last["R4"] > c), last["R4"], c * 1.1)
-    stop = np.where(last["swing_low"] < c, last["swing_low"], last["sma50"])
-    last["stop"] = np.minimum(stop, c * 0.999)                # stop must sit below price
-    last["risk_pct"] = (c / last["stop"] - 1) * 100
-    last["reward_near_pct"] = (last["target_near"] / c - 1) * 100   # to immediate resistance
-    last["room_to_r4_pct"] = (last["target_r4"] / c - 1) * 100      # to R4 (swing target)
-    last["rr"] = (last["room_to_r4_pct"] / last["risk_pct"]).replace([np.inf, -np.inf], np.nan)
-    last["rr_ok"] = last["rr"] >= cfg.min_rr
-
-    # --- composite (0..100) ------------------------------------------------
-    rr = last["rr"].clip(lower=0).fillna(0)
-    vr = last["vol_ratio"].clip(lower=0).fillna(0)
-    last["score"] = (
-        18 * last["trend_ok"]
-        + 18 * (align_bits / 4)
-        + 8 * last["rsi_ok"] + 8 * last["macd_ok"]
-        + 10 * (vr.clip(upper=2) / 2)
-        + 10 * last["vcp_ok"]
-        + 15 * last["breakout_ok"]
-        + 13 * (rr.clip(upper=3) / 3)
-    ).round(1)
+    last["reward_near_pct"] = (last["target_near"] / last["close"] - 1) * 100
 
     last["symbol"] = last["symbol"].str.replace(".NS", "", regex=False).str.replace(".BO", "", regex=False)
     return last.sort_values("score", ascending=False)
+
+
+def add_scores(f: pd.DataFrame, min_rr: float = 2.0) -> pd.DataFrame:
+    """Vectorised checklist gates + the 0-100 composite, for ANY set of rows
+    (the live snapshot or full history). Single source of truth for the score,
+    so the backtest measures exactly what the scanner shows."""
+    c = f["close"]
+    f["trend_ok"] = (c > f["sma50"]) & (f["sma50"] > f["sma50_prev"])
+    align_bits = ((c > f["sma20"]).astype(int) + (f["sma20"] > f["sma50"]).astype(int)
+                  + (f["sma50"] > f["sma100"]).astype(int) + (f["sma100"] > f["sma200"]).astype(int))
+    f["align_bits"] = align_bits                                # 0..4
+    f["aligned"] = align_bits == 4
+    f["rsi_ok"] = f["rsi"].between(50, 78)
+    f["macd_ok"] = (f["macd"] > f["macd_sig"]) & (f["macd"] > 0)
+    f["vol_ratio"] = (f["volume"] / f["volavg50"]).replace([np.inf, -np.inf], np.nan)
+    f["vol_ok"] = f["vol_ratio"] >= 1.0
+    f["vcp_ok"] = f["atr_recent"] < f["atr_prev"]
+    f["breakout_ok"] = c >= f["base_high"] * 0.985
+    f["ext_above_base_pct"] = (c / f["base_high"] - 1) * 100
+
+    # R4 = the monthly extension target (the swing goal); R:R is scored on R4.
+    f["target_r4"] = np.where(f["R4"].notna() & (f["R4"] > c), f["R4"], c * 1.1)
+    stop = np.where(f["swing_low"] < c, f["swing_low"], f["sma50"])
+    f["stop"] = np.minimum(stop, c * 0.999)                     # stop must sit below price
+    f["risk_pct"] = (c / f["stop"] - 1) * 100
+    f["room_to_r4_pct"] = (f["target_r4"] / c - 1) * 100
+    f["rr"] = (f["room_to_r4_pct"] / f["risk_pct"]).replace([np.inf, -np.inf], np.nan)
+    f["rr_ok"] = f["rr"] >= min_rr
+
+    rr = f["rr"].clip(lower=0).fillna(0)
+    vr = f["vol_ratio"].clip(lower=0).fillna(0)
+    f["score"] = (
+        18 * f["trend_ok"]
+        + 18 * (align_bits / 4)
+        + 8 * f["rsi_ok"] + 8 * f["macd_ok"]
+        + 10 * (vr.clip(upper=2) / 2)
+        + 10 * f["vcp_ok"]
+        + 15 * f["breakout_ok"]
+        + 13 * (rr.clip(upper=3) / 3)
+    ).round(1)
+    return f
 
 
 def build(cfg) -> pd.DataFrame:
