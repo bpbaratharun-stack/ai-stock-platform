@@ -169,6 +169,12 @@ export const PF2_CSS = `
 .pf .badge.nse{background:var(--brandbg);color:var(--brand)}
 .pf .badge.us{background:var(--warnbg);color:var(--warn)}
 .pf .badge.fund{background:var(--panel2);color:var(--muted);border:1px solid var(--line)}
+.pf .chk{display:inline-flex;align-items:center;font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:var(--panel2);color:var(--faint);border:1px solid var(--line);white-space:nowrap}
+.pf .chk.on{background:var(--posbg);color:var(--pos);border-color:transparent}
+.pf .chk.warn{background:var(--warnbg);color:var(--warn);border-color:transparent}
+.pf .chks{display:flex;gap:4px;flex-wrap:wrap}
+.pf .score{display:inline-grid;place-items:center;width:38px;height:38px;border-radius:10px;font-weight:700;font-size:14px;font-family:var(--ser)}
+.pf .score.hi{background:var(--posbg);color:var(--pos)}.pf .score.mid{background:var(--warnbg);color:var(--warn)}.pf .score.lo{background:var(--panel2);color:var(--muted)}
 @media(max-width:820px){.pf .hero,.pf .two{grid-template-columns:1fr}.pf .kpis{grid-template-columns:repeat(2,1fr)}.pf .alloc{grid-template-columns:1fr}}
 `;
 
@@ -325,7 +331,7 @@ export default function PortfolioV2() {
         <header className="top">
           <div className="brand">
             <h1>Portfolio</h1>
-            <nav className="nav"><Link className="on" to="/">Overview</Link><Link to="/v2/booked">Booking</Link></nav>
+            <nav className="nav"><Link className="on" to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link to="/v2/mock">Mock trading</Link></nav>
           </div>
           <div className="controls">
             <div className="seg">
