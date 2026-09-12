@@ -10,6 +10,8 @@ models/
 backend/data/holdings.json
 # Realized-trade ledger — personal, keep out of git
 backend/data/booked.json
+# Paper-trading (mock) book — personal, keep out of git
+backend/data/paper_trades.json
 
 # Derived sector lookup cache (yfinance)
 backend/data/sector_cache.json

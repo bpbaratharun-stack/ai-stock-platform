@@ -67,6 +67,10 @@ HOLDINGS_PATH = os.environ.get("HOLDINGS_PATH") or next(
 BOOKED_PATH = os.environ.get("BOOKED_PATH") or os.path.join(
     os.path.dirname(HOLDINGS_PATH), "booked.json")
 
+# Paper-trading (mock) book — virtual trades to test the strategy, beside holdings.
+PAPER_PATH = os.environ.get("PAPER_PATH") or os.path.join(
+    os.path.dirname(HOLDINGS_PATH), "paper_trades.json")
+
 TTL_VIX, TTL_PX = 300, 300
 FALLBACK_VIX = 16.0
 FALLBACK_USDINR = 86.0
@@ -1295,6 +1299,190 @@ def strategy_scan(top: int = Query(default=25, ge=1, le=100),
     out = dict(cached)
     out["candidates"] = cached["candidates"][:top]
     return out
+
+
+# ============================================================ PAPER TRADING
+def load_paper() -> dict:
+    """Read the mock-trading book (paper_trades.json). Empty if absent."""
+    if not os.path.exists(PAPER_PATH):
+        return {"trades": []}
+    try:
+        with open(PAPER_PATH, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        trades = doc.get("trades", [])
+        return {"trades": trades if isinstance(trades, list) else []}
+    except Exception as exc:
+        raise HTTPException(500, f"Could not parse paper_trades.json: {exc}")
+
+
+def save_paper(doc: dict) -> None:
+    tmp = PAPER_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+    os.replace(tmp, PAPER_PATH)
+
+
+class PaperIn(BaseModel):
+    symbol: str
+    exchange: str = "NSE"
+    entry_price: float | None = None          # default: live price at open
+    qty: float | None = None                  # give qty OR notional_inr
+    notional_inr: float | None = None
+    target: float | None = None
+    stop: float | None = None
+    date: str | None = None
+    note: str = ""
+    score: float | None = None                # setup score at entry, if from a scan
+
+
+class PaperClose(BaseModel):
+    exit_price: float | None = None           # default: live price at close
+
+
+def _paper_row(t: dict, live: dict, rate: float) -> dict:
+    """One paper trade with live mark, P&L and progress toward target/stop."""
+    sym = str(t["symbol"]).upper()
+    exch = str(t.get("exchange", "NSE")).upper()
+    is_usd = exch in ("US", "USMF")
+    fxm = rate if is_usd else 1.0
+    qty = float(t.get("qty", 0))
+    entry = float(t.get("entry_price", 0))
+    target = t.get("target")
+    stop = t.get("stop")
+    closed = t.get("status") == "closed"
+    px = live.get(sym)
+    mark = float(t["exit_price"]) if closed else (px["last"] if px else entry)
+
+    pnl_native = (mark - entry) * qty
+    row = {
+        "id": t.get("id"), "symbol": sym.replace(".NS", "").replace(".BO", ""),
+        "exchange": exch, "currency": "USD" if is_usd else "INR",
+        "qty": round(qty, 4), "entry_price": round(entry, 2),
+        "target": round(float(target), 2) if target else None,
+        "stop": round(float(stop), 2) if stop else None,
+        "date": t.get("date"), "note": t.get("note", ""), "score": t.get("score"),
+        "status": "closed" if closed else "open",
+        "mark": round(mark, 2), "stale": (not closed and px is None),
+        "pnl_native": round(pnl_native, 2), "pnl_inr": round(pnl_native * fxm, 2),
+        "pnl_pct": round((mark / entry - 1) * 100, 2) if entry else 0.0,
+        "invested_inr": round(entry * qty * fxm, 2),
+    }
+    # planned risk:reward and, while open, live progress toward target/stop
+    if target and stop and entry and (entry - float(stop)) != 0:
+        row["rr_planned"] = round((float(target) - entry) / (entry - float(stop)), 2)
+    if closed:
+        row["exit_price"] = round(float(t["exit_price"]), 2)
+        row["exit_date"] = t.get("exit_date")
+        if stop and entry and (entry - float(stop)) != 0:
+            row["r_multiple"] = round((mark - entry) / (entry - float(stop)), 2)
+        row["outcome"] = "win" if pnl_native > 0 else ("loss" if pnl_native < 0 else "flat")
+    else:
+        if target:
+            row["to_target_pct"] = round((float(target) / mark - 1) * 100, 2)
+            row["hit_target"] = mark >= float(target)
+        if stop:
+            row["to_stop_pct"] = round((mark / float(stop) - 1) * 100, 2)
+            row["hit_stop"] = mark <= float(stop)
+    return row
+
+
+@app.get("/paper")
+def paper():
+    """The mock-trading book with live marks: open positions (unrealized P&L,
+    progress to target/stop) and closed trades (realized, R-multiple, win/loss),
+    plus strategy scorecard aggregates. Virtual only — no real orders."""
+    trades = load_paper()["trades"]
+    rate = float(fetch_usdinr()["rate"])
+    live = fetch_last_prices([t["symbol"] for t in trades if t.get("status") != "closed"]) if trades else {}
+    rows = [_paper_row(t, live, rate) for t in trades]
+    rows.sort(key=lambda r: (r["status"] != "open", r["date"] or ""), reverse=False)
+
+    open_r = [r for r in rows if r["status"] == "open"]
+    closed_r = [r for r in rows if r["status"] == "closed"]
+    wins = [r for r in closed_r if r["pnl_inr"] > 0]
+    r_mults = [r["r_multiple"] for r in closed_r if r.get("r_multiple") is not None]
+    return {
+        "trades": rows,
+        "summary": {
+            "n_open": len(open_r), "n_closed": len(closed_r),
+            "unrealized_inr": round(sum(r["pnl_inr"] for r in open_r), 2),
+            "realized_inr": round(sum(r["pnl_inr"] for r in closed_r), 2),
+            "wins": len(wins), "losses": len(closed_r) - len(wins),
+            "win_rate": round(len(wins) / len(closed_r) * 100, 1) if closed_r else None,
+            "avg_r": round(sum(r_mults) / len(r_mults), 2) if r_mults else None,
+            "hit_target": sum(1 for r in open_r if r.get("hit_target")),
+            "hit_stop": sum(1 for r in open_r if r.get("hit_stop")),
+        },
+        "disclaimer": DISCLAIMER,
+    }
+
+
+@app.post("/paper")
+def add_paper(p: PaperIn):
+    """Open a virtual (paper) trade to test the strategy. Entry defaults to the
+    live price; size by qty or notional_inr. Captures target/stop for tracking."""
+    exch = p.exchange.strip().upper()
+    if exch not in ("NSE", "US", "MF", "USMF"):
+        raise HTTPException(400, "exchange must be 'NSE', 'US', 'MF' or 'USMF'.")
+    sym = _normalize_holding_symbol(p.symbol, exch)
+    px = fetch_last_prices([sym]).get(sym)
+    entry = float(p.entry_price) if p.entry_price else (px["last"] if px else None)
+    if entry is None or entry <= 0:
+        raise HTTPException(422, f"No live price for '{sym}' and no entry_price given.")
+    if p.qty and p.qty > 0:
+        qty = float(p.qty)
+    elif p.notional_inr and p.notional_inr > 0:
+        rate = float(fetch_usdinr()["rate"]) if exch in ("US", "USMF") else 1.0
+        qty = round(p.notional_inr / (entry * rate), 4)
+    else:
+        raise HTTPException(400, "Provide qty or notional_inr.")
+    if qty <= 0:
+        raise HTTPException(400, "Computed quantity is zero — raise the notional.")
+    trade = {
+        "id": uuid.uuid4().hex[:12], "symbol": sym, "exchange": exch,
+        "entry_price": round(entry, 4), "qty": qty,
+        "target": round(float(p.target), 4) if p.target else None,
+        "stop": round(float(p.stop), 4) if p.stop else None,
+        "date": p.date or pd.Timestamp.now().strftime("%Y-%m-%d"),
+        "note": (p.note or "").strip()[:200],
+        "score": round(float(p.score), 1) if p.score is not None else None,
+        "status": "open",
+    }
+    doc = load_paper()
+    doc["trades"].append(trade)
+    save_paper(doc)
+    return {"ok": True, "id": trade["id"], "entry_price": trade["entry_price"], "qty": qty}
+
+
+@app.post("/paper/{trade_id}/close")
+def close_paper(trade_id: str, body: PaperClose):
+    """Close a paper trade at a price (default: live) — books the virtual result."""
+    doc = load_paper()
+    for t in doc["trades"]:
+        if t.get("id") == trade_id:
+            if t.get("status") == "closed":
+                raise HTTPException(400, "Trade already closed.")
+            px = fetch_last_prices([t["symbol"]]).get(str(t["symbol"]).upper())
+            exit_px = float(body.exit_price) if body.exit_price else (px["last"] if px else None)
+            if exit_px is None or exit_px <= 0:
+                raise HTTPException(422, "No live price and no exit_price given.")
+            t["status"] = "closed"
+            t["exit_price"] = round(exit_px, 4)
+            t["exit_date"] = pd.Timestamp.now().strftime("%Y-%m-%d")
+            save_paper(doc)
+            return {"ok": True, "id": trade_id, "exit_price": t["exit_price"]}
+    raise HTTPException(404, f"No paper trade '{trade_id}'.")
+
+
+@app.delete("/paper/{trade_id}")
+def remove_paper(trade_id: str):
+    doc = load_paper()
+    kept = [t for t in doc["trades"] if t.get("id") != trade_id]
+    if len(kept) == len(doc["trades"]):
+        raise HTTPException(404, f"No paper trade '{trade_id}'.")
+    doc["trades"] = kept
+    save_paper(doc)
+    return {"ok": True, "removed": trade_id}
 
 
 def _reduce_holding(sym: str, exch: str, qty: float):
