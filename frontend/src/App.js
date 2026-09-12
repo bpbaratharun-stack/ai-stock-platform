@@ -670,6 +670,7 @@ function VCPBreakoutsView() {
     { key: "base_high", label: "PIVOT ₹", numeric: true },
     { key: "ext_above_pivot_pct", label: "EXT %", numeric: true },
     { key: "base_depth_pct", label: "DEPTH %", numeric: true },
+    { key: "pullbacks", label: "PULLBACKS %", numeric: false },
     { key: "vol_mult", label: "VOL ×", numeric: true },
     { key: "close_strength", label: "CLOSE STR", numeric: true },
     { key: "tr_contraction", label: "TR CONTR", numeric: true },
@@ -732,6 +733,7 @@ function VCPBreakoutsView() {
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="base high / breakout pivot">{num(b.base_high)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="close vs pivot; >25% is rejected">{num(b.ext_above_pivot_pct, "%")}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="base depth; ≤35% required">{num(b.base_depth_pct, "%")}</td>
+                  <td style={{ padding: "10px", textAlign: "left", color: "#2dd4bf", fontFamily: "JetBrains Mono", fontWeight: 700 }} title="successive pullback depths inside the base, oldest→newest; each must be shallower than the last (the VCP hallmark) and the final one ≤10%">{b.pullbacks ?? "—"}{b.final_pullback_pct != null ? <span style={{ color: "#64748b", fontWeight: 400 }}> · final {b.final_pullback_pct}%</span> : null}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: b.vol_mult >= 20 ? "#ff4d4d" : "#f59e0b" }} title="breakout volume vs 20w avg">{num(b.vol_mult, "×")}{b.vol_mult >= 20 ? " ⚠" : ""}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="close position in weekly range; ≥0.6 required">{num(b.close_strength)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="mean TR last 4 wks / first 4 wks of base; <1 = contraction">{num(b.tr_contraction)}</td>

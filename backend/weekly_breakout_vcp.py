@@ -25,10 +25,14 @@ Base (window = the prior `--base-len` weeks, default 40, excluding this week):
   - base high  = highest weekly high in the window
   - base depth = (base_high - lowest low)/base_high <= 35%   (not a broken stock)
   - contraction: mean weekly true range of the LAST 4 weeks of the base
-    < mean true range of the FIRST 4 weeks of the base   (VCP, one inequality)
-  - flat-topped, not a V: >= 2 weeks in the base had a high within 25% of the
-    base high  [interpretation of "price actually spent time near the ceiling";
-    tune with --near-high-frac / --min-ceiling-touches]
+    < mean true range of the FIRST 4 weeks of the base
+  - GENUINE VCP (added after the one-inequality version let V-runs and even
+    expanding bases through): >= 2 successive pullbacks (>= 3% deep) inside the
+    base, EACH SHALLOWER than the last, and the final pullback <= 10%
+    [--min-pullbacks / --max-final-pullback]
+  - flat-topped, not a V: >= 3 weeks in the base had a high within 10% of the
+    base high  [--near-high-frac 0.90 / --min-ceiling-touches 3; the old 25%
+    tolerance counted ~every week as a "touch", so the gate did nothing]
 
 Trigger (on the week's Friday close):
   - weekly close > base high
@@ -118,6 +122,23 @@ def universe_mask(wk: pd.DataFrame, cfg) -> pd.Series:
     return m.fillna(False)
 
 
+def _pullbacks(closes: np.ndarray, min_depth: float = 3.0) -> list[float]:
+    """Successive pullback depths (%) inside a base, oldest -> newest: the
+    drawdown from each running high to the trough before the next new high.
+    A genuine VCP shows these getting SHALLOWER (e.g. 25 -> 12 -> 6)."""
+    out, run_max, trough = [], closes[0], closes[0]
+    for c in closes[1:]:
+        if c >= run_max:
+            if trough < run_max:
+                out.append((run_max - trough) / run_max * 100)
+            run_max, trough = c, c
+        else:
+            trough = min(trough, c)
+    if trough < run_max:
+        out.append((run_max - trough) / run_max * 100)
+    return [d for d in out if d >= min_depth]           # ignore sub-noise wiggles
+
+
 # --------------------------------------------------------------------------- #
 # Per-symbol base detection, trigger, and trade simulation
 # --------------------------------------------------------------------------- #
@@ -158,6 +179,17 @@ def scan_symbol(arr, cfg, results_dates=None):
         if touches < cfg.min_ceiling_touches:                # flat top, not a V
             continue
 
+        # GENUINE VCP: successive pullbacks each SHALLOWER than the last, ending
+        # in a tight final contraction. A single "range fell" inequality is not
+        # a VCP — it let straight V-runs and even EXPANDING bases through.
+        pulls = _pullbacks(cl[t - L:t])
+        if len(pulls) < cfg.min_pullbacks:
+            continue
+        if not all(pulls[i] > pulls[i + 1] for i in range(len(pulls) - 1)):
+            continue                                          # not contracting
+        if pulls[-1] > cfg.max_final_pullback:
+            continue                                          # final leg too loose
+
         # trigger (on this week's close)
         va = volavg20[t]
         if not (
@@ -177,6 +209,8 @@ def scan_symbol(arr, cfg, results_dates=None):
             "vol_mult": round(float(vol[t] / va), 2),
             "close_strength": round(float(cs[t]), 2),
             "ceiling_touches": touches,
+            "pullbacks": "->".join(f"{p:.0f}" for p in pulls),   # e.g. 18->9->4
+            "final_pullback_pct": round(float(pulls[-1]), 1),
             "tr_contraction": round(float(tr_last4 / tr_first4), 2),
             "adtv_cr": round(float(arr["med_turnover"][t] / RS_CR), 2),
             "near_results": nr,
@@ -301,9 +335,10 @@ def print_backtest(trades: pd.DataFrame, benchmark_by_week: pd.Series):
     # EARNINGS DRIFT TEST: is the whole result just breakouts that coincide with
     # a quarterly-results announcement (post-earnings drift in disguise)?
     if "near_results" in closed.columns and closed["near_results"].notna().any():
-        known = closed[closed["near_results"].notna()]
-        near = known[known["near_results"]]
-        away = known[~known["near_results"]]
+        known = closed[closed["near_results"].notna()].copy()
+        flag = known["near_results"].astype(bool)      # object dtype (None-mixed): ~ would bit-flip ints
+        near = known[flag]
+        away = known[~flag]
         cov = len(known) / len(closed) * 100
         near_share = len(near) / len(known) * 100 if len(known) else 0
         print(f"\n  --- earnings-drift split (breakout within +/-1wk of results) ---")
@@ -390,8 +425,8 @@ def run(cfg):
     print(f"-> {out_path}")
     if not this_week.empty:
         show = this_week[["symbol", "close", "base_high", "ext_above_pivot_pct",
-                          "base_depth_pct", "vol_mult", "close_strength",
-                          "tr_contraction", "adtv_cr", "near_results"]]
+                          "base_depth_pct", "pullbacks", "final_pullback_pct",
+                          "vol_mult", "close_strength", "adtv_cr", "near_results"]]
         print(show.to_string(index=False))
 
     # ---- backtest ----------------------------------------------------------
@@ -417,8 +452,11 @@ def main():
     p.add_argument("--base-len", type=int, default=20, help="Base lookback window in weeks, 8-40 per spec "
                    "(default 20: 40 clears too rarely to be useful; the no-edge verdict holds across the range).")
     p.add_argument("--max-base-depth", type=float, default=0.35, help="Max base depth as fraction (default 0.35).")
-    p.add_argument("--near-high-frac", type=float, default=0.75, help="'Near the ceiling' = high >= this x base high (default 0.75).")
-    p.add_argument("--min-ceiling-touches", type=int, default=2, help="Min base weeks near the ceiling (default 2).")
+    p.add_argument("--near-high-frac", type=float, default=0.90, help="'Near the ceiling' = high >= this x base high (default 0.90; "
+                   "0.75 let every base count ~all its weeks as 'touches').")
+    p.add_argument("--min-ceiling-touches", type=int, default=3, help="Min base weeks near the ceiling (default 3).")
+    p.add_argument("--min-pullbacks", type=int, default=2, help="Min successive pullbacks (>=3%% deep) in the base (default 2).")
+    p.add_argument("--max-final-pullback", type=float, default=10.0, help="Max depth %% of the LAST pullback before breakout (default 10).")
     p.add_argument("--min-vol-mult", type=float, default=1.5, help="Breakout volume vs 20w avg (default 1.5).")
     p.add_argument("--min-close-strength", type=float, default=0.6, help="Close position in weekly range, 0-1 (default 0.6).")
     p.add_argument("--max-ext-mult", type=float, default=1.25, help="Max close as multiple of base high (default 1.25).")

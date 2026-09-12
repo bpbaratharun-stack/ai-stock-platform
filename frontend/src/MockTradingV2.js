@@ -113,7 +113,7 @@ export default function MockTradingV2() {
             </div>
           </div>
           <div className="msg" style={{ paddingTop: 0 }}>
-            {scan ? `As of ${scan.as_of} · ${scan.n_scored} stocks scored · top ${scan.candidates.length} setups` : scanErr ? "" : "Scoring the universe…"}
+            {scan ? `As of ${scan.as_of} · ${scan.n_scored} stocks scored · top ${scan.candidates.length} setups · VCP chip = the weekly VCP screen (${scan.vcp_week ?? "n/a"}: ${scan.vcp_symbols?.length ?? 0} genuine breakouts) · ATR↓ = 10-day range contracting` : scanErr ? "" : "Scoring the universe…"}
           </div>
           {scanErr && <div className="empty">{scanErr}</div>}
           {scan && (
@@ -136,6 +136,7 @@ export default function MockTradingV2() {
                           <Chk ok={k.rsi} label="RSI" />
                           <Chk ok={k.macd} label="MACD" />
                           <Chk ok={k.volume} label="Vol" />
+                          <Chk ok={k.atr_contracting} label="ATR↓" />
                           <Chk ok={k.vcp} label="VCP" />
                           <Chk ok={k.breakout} label="Brk" />
                           <Chk ok={k.risk_reward} label="R:R" />

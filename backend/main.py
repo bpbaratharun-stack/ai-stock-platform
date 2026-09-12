@@ -1243,7 +1243,7 @@ def alerts(dma: int = Query(default=50, ge=5, le=200),
 TTL_SCAN = 3600   # strategy scorecard cached 1h (heavy compute over the full panel)
 
 
-def _scan_row(r) -> dict:
+def _scan_row(r, vcp_set: set | None = None) -> dict:
     def g(k, nd=2):
         v = r.get(k)
         return round(float(v), nd) if pd.notna(v) else None
@@ -1256,7 +1256,11 @@ def _scan_row(r) -> dict:
             "rsi": bool(r["rsi_ok"]),
             "macd": bool(r["macd_ok"]),
             "volume": bool(r["vol_ok"]),
-            "vcp": bool(r["vcp_ok"]),
+            # "vcp" = a GENUINE VCP breakout per the weekly screen (same list as
+            # the VCP tab), so the two tabs agree. The daily 10-day ATR proxy the
+            # score uses is reported separately as atr_contracting.
+            "vcp": (r["symbol"] in vcp_set) if vcp_set is not None else False,
+            "atr_contracting": bool(r["vcp_ok"]),
             "breakout": bool(r["breakout_ok"]),
             "risk_reward": bool(r["rr_ok"]),
         },
@@ -1289,9 +1293,19 @@ def strategy_scan(top: int = Query(default=25, ge=1, le=100),
         except FileNotFoundError:
             raise HTTPException(503, "panel.parquet not found — run ingest_bhavcopy.py first.")
         asof = str(pd.to_datetime(res["date"].max()).date()) if not res.empty else None
+        # genuine-VCP list = the weekly screen's latest signals (what the VCP tab shows)
+        vcp_set, vcp_week = set(), None
+        files = _vcp_files()
+        if files:
+            vcp_week, vpath = files[0]
+            try:
+                vcp_set = {str(s).strip().upper() for s in pd.read_csv(vpath)["symbol"].tolist()}
+            except Exception as exc:
+                log.warning("Could not read VCP list for the scanner: %s", exc)
         cached = {
             "as_of": asof, "n_scored": int(len(res)),
-            "candidates": [_scan_row(r) for _, r in res.head(100).iterrows()],
+            "vcp_week": vcp_week, "vcp_symbols": sorted(vcp_set),
+            "candidates": [_scan_row(r, vcp_set) for _, r in res.head(100).iterrows()],
             "params": {"min_rr": min_rr, "min_turnover_cr": min_turnover_cr, "min_price": min_price},
             "disclaimer": DISCLAIMER,
         }
@@ -1781,6 +1795,8 @@ def vcp_breakouts(week: str = Query(default=None),
                 "vol_mult": _f(r.get("vol_mult")),
                 "close_strength": _f(r.get("close_strength")),
                 "tr_contraction": _f(r.get("tr_contraction")),
+                "pullbacks": (str(r.get("pullbacks")) if pd.notna(r.get("pullbacks")) else None),  # e.g. "12->6"
+                "final_pullback_pct": _f(r.get("final_pullback_pct")),
                 "adtv": _f(r.get("adtv_cr")),
                 "near_results": {"True": True, "False": False}.get(
                     str(r.get("near_results")).strip()),
