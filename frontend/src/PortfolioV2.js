@@ -532,7 +532,7 @@ export default function PortfolioV2() {
                       <td><div className="wcell"><div className="wbar"><span style={{ width: `${Math.min(wt / (c?.largest?.pct || 10) * 100, 100)}%` }} /></div>{wt.toFixed(1)}%</div></td>
                       <td className={h.day_change_pct >= 0 ? "pos" : "neg"}>{h.day_change_pct >= 0 ? "+" : ""}{h.day_change_pct}%</td>
                       <td className={h.pnl_inr >= 0 ? "pos" : "neg"}>{signed(h.pnl_inr)}<div className={`i ${h.pnl_pct >= 0 ? "pos" : "neg"}`}>{h.pnl_pct >= 0 ? "+" : ""}{h.pnl_pct}%</div></td>
-                      <td style={{ color: "var(--muted)" }}>{dv && dv.annual_income_inr > 0 ? base(dv.annual_income_inr) : "—"}</td>
+                      <td style={{ color: "var(--muted)" }} title={dv && dv.last_div_date ? `${dv.div_per_share_ttm}/share over 12 months · most recent ex-date ${dv.last_div_date} (${dv.days_since_div} days ago)` : ""}>{dv && dv.annual_income_inr > 0 ? <>{base(dv.annual_income_inr)}{dv.stale && <span className="dma f" style={{ marginLeft: 5 }} title={`No declaration in the past 12 months. Shown is the last complete 12-month payout (${dv.div_per_share_ttm}/share, ending at the ex-date ${dv.last_div_date}, ${dv.days_since_div} days ago), used as the run-rate until the next dividend is declared.`}>OLD</span>}</> : "—"}</td>
                       <td><div className="wcell" style={{ gap: 4 }}>
                         <button className="del" title="Edit qty / avg price" onClick={() => { setEditKey(key); setEditVals({ qty: String(h.qty), avg_price: String(h.avg_price) }); setMsg(null); }}>✎</button>
                         <button className="del" title="Remove position" onClick={() => removePos(h)}>✕</button>

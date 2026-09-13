@@ -835,34 +835,54 @@ def portfolio():
     }
 
 
-TTL_DIV = 43200   # dividends change rarely — cache each symbol's TTM figure 12h
+TTL_DIV = 43200   # dividends change rarely — cache each symbol's figures 12h
+DIV_GRACE_DAYS = 540   # an annual payer up to ~6 months late still counts as a run-rate
 
 
-def _ttm_dividend_per_share(sym: str) -> float:
-    """Trailing-12-month cash dividend per share for one ticker (native currency),
-    from yfinance. Cached per symbol; 0.0 for non-payers or on any fetch error."""
-    hit, v = CACHE.get(f"div:{sym}", TTL_DIV)
+def _dividend_facts(sym: str) -> dict:
+    """Dividend run-rate per share for one ticker (native currency), from yfinance.
+
+    A plain trailing-12-month sum has a cliff: a once-a-year payer shows its full
+    dividend for 364 days and then silently reports ZERO in the days before it
+    declares again (SAIL paid Rs 1.60 on 2025-09-08 — at 370 days that is a real
+    payer reading as a non-payer). So when the TTM window is empty we fall back
+    to the most recent COMPLETE 12-month cycle (the 365 days ending at the last
+    payment) and flag it `stale`, as long as that payment is inside the grace
+    window. Beyond it the stock has genuinely stopped paying and we report 0.
+
+    Returns {dps, stale, last_date, days_since} — dps is the annual run-rate."""
+    hit, v = CACHE.get(f"div2:{sym}", TTL_DIV)       # div2: shape changed from a float
     if hit:
         return v
-    val = 0.0
+    out = {"dps": 0.0, "stale": False, "last_date": None, "days_since": None}
     try:
         s = yf.Ticker(sym).dividends            # Series: ex-date -> dividend/share
         if s is not None and len(s):
-            cutoff = pd.Timestamp.now(tz=s.index.tz) - pd.Timedelta(days=365)
-            val = round(float(s[s.index >= cutoff].sum()), 4)
+            now = pd.Timestamp.now(tz=s.index.tz)
+            ttm = float(s[s.index >= now - pd.Timedelta(days=365)].sum())
+            last_d = s.index[-1]
+            days = int((now - last_d).days)
+            out["last_date"] = str(last_d.date())
+            out["days_since"] = days
+            if ttm > 0:
+                out["dps"] = round(ttm, 4)
+            elif days <= DIV_GRACE_DAYS:
+                cycle = s[(s.index > last_d - pd.Timedelta(days=365)) & (s.index <= last_d)].sum()
+                out["dps"] = round(float(cycle), 4)
+                out["stale"] = out["dps"] > 0
     except Exception as exc:
         log.warning("Dividend fetch failed %s: %s", sym, exc)
-    CACHE.set(f"div:{sym}", val)
-    return val
+    CACHE.set(f"div2:{sym}", out)
+    return out
 
 
 def fetch_dividends_ttm(symbols: list[str]) -> dict:
-    """{symbol: TTM dividend/share}. Cold symbols fetched in parallel; cached hot."""
+    """{symbol: {dps, stale, last_date, days_since}}. Cold symbols in parallel."""
     syms = sorted({s.upper() for s in symbols})
     if not syms:
         return {}
     with ThreadPoolExecutor(max_workers=8) as ex:
-        vals = list(ex.map(_ttm_dividend_per_share, syms))
+        vals = list(ex.map(_dividend_facts, syms))
     return dict(zip(syms, vals))
 
 
@@ -892,7 +912,8 @@ def dividends():
         fxm = rate if is_us else 1.0
         qty = float(p.get("qty", 0))
         avg = float(p.get("avg_price", 0))
-        dps = float(divmap.get(sym, 0.0))                 # native dividend/share (TTM)
+        facts = divmap.get(sym) or {}
+        dps = float(facts.get("dps", 0.0))                # native dividend/share, annual run-rate
         px = prices.get(sym)
         last = px["last"] if px else avg
 
@@ -908,6 +929,9 @@ def dividends():
             "exchange": exch, "currency": "USD" if is_us else "INR",
             "qty": round(qty, 4),
             "div_per_share_ttm": round(dps, 4),           # native ₹/$ per share
+            "stale": bool(facts.get("stale")),            # run-rate from the last cycle, not the last 12m
+            "last_div_date": facts.get("last_date"),
+            "days_since_div": facts.get("days_since"),
             "annual_income_inr": round(annual_inr, 2),
             "yield_on_cost_pct": round(dps / avg * 100, 2) if avg else 0.0,
             "current_yield_pct": round(dps / last * 100, 2) if last else 0.0,
