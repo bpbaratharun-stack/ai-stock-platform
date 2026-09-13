@@ -176,6 +176,91 @@ def build(cfg) -> pd.DataFrame:
     return score_latest(df, cfg)
 
 
+# --------------------------------------------------------------------------- #
+# Variant: "EMA turnaround" (a Chartink-style scan shared by the owner)
+# --------------------------------------------------------------------------- #
+def add_turnaround(df: pd.DataFrame) -> pd.DataFrame:
+    """Chartink-style scan — a FRESH weekly turnaround with a daily entry trigger.
+
+    Weekly structure (last completed week, point-in-time):
+      - weekly EMA20 rising: now > 5w ago > 10w > 15w > 20w > 25w ago
+      - weekly EMA50 rising: same 25-week chain
+      - weekly EMA200 rising: now > 5w > 10w > 15w ago
+      - AND 30 weeks ago EMA20 < EMA200  (it was in a downtrend then: an early
+        Stage-2 turnaround, not an old leader)
+    Daily trigger, any one of:
+      - EMA20 crosses above EMA50 today
+      - pullback: low touches EMA20 and close finishes back above it
+      - EMA50 crosses above EMA200 today (golden cross)
+
+    Caveat: panel.parquet starts ~2022, so the WEEKLY EMA200 is not fully
+    warmed (needs ~600 weeks to converge). It is a long-window smoother here,
+    faithful in shape, not in level — the scan only compares it to itself.
+    """
+    from weekly_momentum import to_weekly
+    df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+    g = df.groupby("symbol", observed=True)
+    for w in (20, 50, 200):
+        df[f"ema{w}"] = g["close"].transform(lambda s, w=w: s.ewm(span=w, adjust=False).mean())
+    gg = df.groupby("symbol", observed=True)
+    e20p, e50p, e200p = gg["ema20"].shift(1), gg["ema50"].shift(1), gg["ema200"].shift(1)
+    cross_20_50 = (df["ema20"] > df["ema50"]) & (e20p <= e50p)
+    cross_50_200 = (df["ema50"] > df["ema200"]) & (e50p <= e200p)
+    pull20 = (df["low"] <= df["ema20"]) & (df["close"] > df["ema20"])
+    df["ta_trigger"] = np.select([cross_20_50, cross_50_200, pull20],
+                                 ["cross20/50", "cross50/200", "pullback20"], None)
+
+    # ---- weekly EMA structure on completed weekly bars ----------------------
+    wk = to_weekly(df[["date", "symbol", "open", "high", "low", "close", "volume", "turnover"]].copy())
+    wg = wk.groupby("symbol", observed=True)
+    for w in (20, 50, 200):
+        wk[f"w{w}"] = wg["close"].transform(lambda s, w=w: s.ewm(span=w, adjust=False).mean())
+    wk["n_weeks"] = wg.cumcount() + 1
+    wg = wk.groupby("symbol", observed=True)
+    L = lambda col, k: wg[col].shift(k)
+    r20 = ((wk["w20"] > L("w20", 5)) & (L("w20", 5) > L("w20", 10)) & (L("w20", 10) > L("w20", 15))
+           & (L("w20", 15) > L("w20", 20)) & (L("w20", 20) > L("w20", 25)))
+    r50 = ((wk["w50"] > L("w50", 5)) & (L("w50", 5) > L("w50", 10)) & (L("w50", 10) > L("w50", 15))
+           & (L("w50", 15) > L("w50", 20)) & (L("w50", 20) > L("w50", 25)))
+    r200 = ((wk["w200"] > L("w200", 5)) & (L("w200", 5) > L("w200", 10)) & (L("w200", 10) > L("w200", 15))
+            & (L("w20", 30) < L("w200", 30)))
+    wk["ta_weekly_ok"] = (r20 & r50 & r200 & (wk["n_weeks"] >= 60)).fillna(False)
+    wk["ta_weekly_prev"] = wg["ta_weekly_ok"].shift(1).fillna(False).astype(bool)
+
+    # map to daily rows point-in-time: a week's structure is known at its LAST
+    # session (Chartink's "weekly" on that day); earlier in the week use the
+    # prior completed week.
+    df["week"] = df["date"].dt.to_period("W-FRI")
+    m = df.merge(wk[["symbol", "week", "week_end", "ta_weekly_ok", "ta_weekly_prev", "w20", "w50", "w200"]],
+                 on=["symbol", "week"], how="left")
+    is_last = (m["date"] == m["week_end"]).to_numpy()
+    df["ta_weekly"] = np.where(is_last, m["ta_weekly_ok"].fillna(False), m["ta_weekly_prev"].fillna(False)).astype(bool)
+    for w in (20, 50, 200):
+        df[f"w{w}"] = m[f"w{w}"].to_numpy()
+    df["ta_raw"] = df["ta_weekly"] & df["ta_trigger"].notna()
+    return df
+
+
+def build_turnaround(cfg) -> pd.DataFrame:
+    """Live scan: today's EMA-turnaround signals over the liquid universe, with
+    the same stop / R4 target / R:R fields as the checklist scanner so the
+    paper book can size and track them identically."""
+    df = pd.read_parquet(PANEL, columns=["date", "symbol", "sector", "open",
+                                         "high", "low", "close", "volume", "turnover"])
+    df = df[~df["symbol"].str.contains(ETF_RE, na=False)]
+    df = compute(df)                 # full history: the weekly EMAs need it
+    df = monthly_pivots(df)
+    df = add_turnaround(df)
+    last = df.groupby("symbol", observed=True).tail(1).copy()
+    last = last[last["ta_raw"] & (last["close"] >= cfg.min_price)
+                & (last["med_turnover"] >= cfg.min_turnover_cr * RS_CR)].copy()
+    if last.empty:
+        return last
+    last = add_scores(last, cfg.min_rr)
+    last["symbol"] = last["symbol"].str.replace(".NS", "", regex=False).str.replace(".BO", "", regex=False)
+    return last.sort_values("score", ascending=False)
+
+
 class Cfg:
     def __init__(self, top=25, min_price=30.0, min_turnover_cr=2.0, min_rr=2.0, window_days=520):
         self.top, self.min_price, self.min_turnover_cr = top, min_price, min_turnover_cr

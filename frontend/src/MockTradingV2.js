@@ -14,7 +14,21 @@ const inr = (v) => "₹" + Math.round(v).toLocaleString("en-IN");
 const signedINR = (v) => (v >= 0 ? "+" : "−") + inr(Math.abs(v));
 const scoreCls = (s) => (s >= 85 ? "hi" : s >= 70 ? "mid" : "lo");
 
-export default function MockTradingV2() {
+// Two paper books, two rules. "checklist" = the discretionary scorecard (Mock 1);
+// "turnaround" = the Chartink EMA scan (Mock 2): weekly EMA20/50/200 all rising for
+// 25 weeks with EMA20 < EMA200 30 weeks ago (a fresh Stage-2 turnaround), entered on
+// a daily trigger — EMA20/50 cross, a pullback to EMA20, or an EMA50/200 cross.
+const VARIANTS = {
+  checklist: { title: "Mock trading", path: "/v2/mock", scanTitle: "Strategy scanner",
+    desc: null },
+  turnaround: { title: "Mock trading 2", path: "/v2/mock2", scanTitle: "EMA turnaround scan",
+    desc: "Weekly EMA20 / 50 / 200 all rising for 25 weeks, and EMA20 was below EMA200 30 weeks ago (a fresh turnaround, not an old leader). Shown when a daily trigger fires: EMA20 crosses EMA50, a pullback that touches EMA20 and closes above it, or EMA50 crosses EMA200." },
+};
+const TRIGGER_LABEL = { "cross20/50": "EMA20 ↗ EMA50", "pullback20": "Pullback to EMA20", "cross50/200": "EMA50 ↗ EMA200" };
+
+export default function MockTradingV2({ variant = "checklist" }) {
+  const V = VARIANTS[variant] ?? VARIANTS.checklist;
+  const isTurn = variant === "turnaround";
   const [scan, setScan] = useState(null);
   const [scanErr, setScanErr] = useState(null);
   const [book, setBook] = useState(null);
@@ -31,13 +45,13 @@ export default function MockTradingV2() {
 
   const loadScan = useCallback(() => {
     setScan(null); setScanErr(null);
-    axios.get(`${API_BASE}/strategy-scan?top=30&min_rr=${minRr}`)
+    axios.get(`${API_BASE}/strategy-scan?top=30&min_rr=${minRr}&variant=${variant}`)
       .then((r) => setScan(r.data))
       .catch((e) => setScanErr(e?.response?.data?.detail ?? "Scan failed."));
-  }, [minRr]);
+  }, [minRr, variant]);
   const loadBook = useCallback(() => {
-    axios.get(`${API_BASE}/paper`).then((r) => setBook(r.data)).catch(() => {});
-  }, []);
+    axios.get(`${API_BASE}/paper?strategy=${variant}`).then((r) => setBook(r.data)).catch(() => {});
+  }, [variant]);
   useEffect(() => { loadScan(); }, [loadScan]);
   useEffect(() => { loadBook(); }, [loadBook]);
 
@@ -47,6 +61,7 @@ export default function MockTradingV2() {
       await axios.post(`${API_BASE}/paper`, {
         symbol: c.symbol, exchange: "NSE", notional_inr: Number(size),
         target: c.target_r4, stop: c.stop, score: c.score,
+        strategy: variant, trigger: c.trigger ?? null,
       });
       setMsg({ err: false, text: `Paper bought ${c.symbol} — ${inr(size)} at live price, target R4 ${c.target_r4}, stop ${c.stop}.` });
       loadBook();
@@ -82,7 +97,7 @@ export default function MockTradingV2() {
         <header className="top">
           <div className="brand">
             <h1>Portfolio</h1>
-            <nav className="nav"><Link to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link className="on" to="/v2/mock">Mock trading</Link></nav>
+            <nav className="nav"><Link to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link className={isTurn ? "" : "on"} to="/v2/mock">Mock trading</Link><Link className={isTurn ? "on" : ""} to="/v2/mock2">Mock trading 2</Link></nav>
           </div>
           <div className="controls">
             <button className="icon" onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))} title="Toggle theme">◐</button>
@@ -103,7 +118,7 @@ export default function MockTradingV2() {
         {/* ---- strategy scanner ---- */}
         <section className="panel" style={{ marginBottom: 16 }}>
           <div className="tbl-h">
-            <h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>Strategy scanner</h3>
+            <h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>{V.scanTitle}</h3>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <label className="check" style={{ gap: 5 }}>min R:R
                 <input value={minRr} onChange={(e) => setMinRr(e.target.value)} style={{ width: 52 }} inputMode="decimal" /></label>
@@ -113,14 +128,16 @@ export default function MockTradingV2() {
             </div>
           </div>
           <div className="msg" style={{ paddingTop: 0 }}>
-            {scan ? `As of ${scan.as_of} · ${scan.n_scored} stocks scored · top ${scan.candidates.length} setups · VCP chip = the weekly VCP screen (${scan.vcp_week ?? "n/a"}: ${scan.vcp_symbols?.length ?? 0} genuine breakouts) · ATR↓ = 10-day range contracting` : scanErr ? "" : "Scoring the universe…"}
+            {scan ? `As of ${scan.as_of} · ${isTurn ? `${scan.n_scored} signals fired today` : `${scan.n_scored} stocks scored · top ${scan.candidates.length} setups`} · VCP chip = the weekly VCP screen (${scan.vcp_week ?? "n/a"}: ${scan.vcp_symbols?.length ?? 0} genuine breakouts) · ATR↓ = 10-day range contracting` : scanErr ? "" : "Scoring the universe…"}
           </div>
+          {V.desc && <div className="msg" style={{ paddingTop: 0, fontWeight: 400, color: "var(--muted)" }}>{V.desc}</div>}
           {scanErr && <div className="empty">{scanErr}</div>}
+          {scan && scan.candidates.length === 0 && <div className="empty">No signals fired today — this rule waits for a fresh trigger, so empty days are normal.</div>}
           {scan && (
             <div style={{ overflowX: "auto" }}>
               <table>
                 <thead><tr>
-                  <th>Score</th><th className="l">Stock</th><th className="l">Checklist</th>
+                  <th>Score</th><th className="l">Stock</th>{isTurn && <th className="l">Trigger</th>}<th className="l">Checklist</th>
                   <th>Close</th><th>Stop</th><th>R4 target</th><th>Room→R4</th><th>R:R</th><th></th>
                 </tr></thead>
                 <tbody>
@@ -130,6 +147,7 @@ export default function MockTradingV2() {
                       <tr key={c.symbol}>
                         <td><span className={`score ${scoreCls(c.score)}`}>{Math.round(c.score)}</span></td>
                         <td className="l"><div className="stk"><div className="s">{c.symbol}</div><div className="i">{c.sector || "—"}</div></div></td>
+                        {isTurn && <td className="l"><span className="badge nse" title={`EMA20 ${c.ema20} · EMA50 ${c.ema50} · EMA200 ${c.ema200}`}>{TRIGGER_LABEL[c.trigger] ?? c.trigger ?? "—"}</span></td>}
                         <td className="l"><div className="chks">
                           <Chk ok={k.sma_stack === 4} warn={k.sma_stack >= 2 && k.sma_stack < 4} label={`SMA ${k.sma_stack}/4`} />
                           <Chk ok={k.trend} label="Trend" />
@@ -169,7 +187,7 @@ export default function MockTradingV2() {
                 <tbody>
                   {open.map((t) => (
                     <tr key={t.id}>
-                      <td className="l"><div className="stk"><div className="s">{t.symbol}{t.hit_target && <span className="badge nse">TARGET</span>}{t.hit_stop && <span className="badge us">STOP</span>}</div>{t.score != null ? <div className="i">setup {t.score}</div> : null}</div></td>
+                      <td className="l"><div className="stk"><div className="s">{t.symbol}{t.hit_target && <span className="badge nse">TARGET</span>}{t.hit_stop && <span className="badge us">STOP</span>}</div>{(t.score != null || t.trigger) ? <div className="i">{t.trigger ? (TRIGGER_LABEL[t.trigger] ?? t.trigger) : `setup ${t.score}`}</div> : null}</div></td>
                       <td>₹{t.entry_price}</td>
                       <td>₹{t.mark}</td>
                       <td>{t.qty}</td>

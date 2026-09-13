@@ -74,7 +74,15 @@ def prepare(cfg) -> pd.DataFrame:
     raw = df["universe"] & pb.fillna(False)
     df["signal_pullback"] = raw & ~raw.groupby(df["symbol"], observed=True).shift(1).fillna(False)  # fresh trigger
 
-    df["signal"] = df["signal_pullback"] if cfg.variant == "pullback" else df["signal_breakout"]
+    # --- variant C: TURNAROUND — the Chartink EMA scan (weekly turnaround + daily trigger)
+    if cfg.variant == "turnaround":
+        from strategy_scan import add_turnaround
+        df = add_turnaround(df)                       # keeps row order; adds ta_* columns
+        raw = df["universe"] & df["ta_raw"]
+        df["signal_turnaround"] = raw & ~raw.groupby(df["symbol"], observed=True).shift(1).fillna(False)
+
+    df["signal"] = {"pullback": df.get("signal_pullback"),
+                    "turnaround": df.get("signal_turnaround")}.get(cfg.variant, df["signal_breakout"])
     df["week"] = df["date"].dt.to_period("W-FRI")
     return df
 
@@ -89,8 +97,10 @@ def pick_signals(df: pd.DataFrame, cfg) -> pd.DataFrame:
 
 def report(df: pd.DataFrame, sig: pd.DataFrame, cfg):
     amt = cfg.amount
-    rule = (f"PULLBACK (quiet dip to the 20-DMA in an intact uptrend)" if cfg.variant == "pullback"
-            else f"BREAKOUT checklist (score >= {cfg.min_score})")
+    rule = {"pullback": "PULLBACK (quiet dip to the 20-DMA in an intact uptrend)",
+            "turnaround": "TURNAROUND (Chartink EMA scan: weekly EMA20/50/200 all rising 25w, "
+                          "EMA20<EMA200 30w ago; daily trigger = 20/50 cross | pullback to EMA20 | 50/200 cross)",
+            }.get(cfg.variant, f"BREAKOUT checklist (score >= {cfg.min_score})")
     print(f"\n{'='*74}\nSTRATEGY BACKTEST — Rs {amt:,.0f} into each fresh setup, entry next open"
           f"\n  rule: {rule}\n{'='*74}")
     print(f"  signals: {len(sig):,} across {sig['week'].nunique():,} weeks  "
@@ -162,7 +172,7 @@ def main():
     p.add_argument("--min-price", type=float, default=30.0)
     p.add_argument("--min-turnover-cr", type=float, default=2.0)
     p.add_argument("--date", type=str, default=None, help="Show one day's picks and their realized reward.")
-    p.add_argument("--variant", choices=["breakout", "pullback"], default="breakout",
+    p.add_argument("--variant", choices=["breakout", "pullback", "turnaround"], default="breakout",
                    help="breakout = the live scanner's checklist score; pullback = buy a quiet dip "
                         "to the 20-DMA inside an intact uptrend (default: breakout).")
     cfg = p.parse_args()

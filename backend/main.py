@@ -1277,19 +1277,22 @@ def _scan_row(r, vcp_set: set | None = None) -> dict:
 def strategy_scan(top: int = Query(default=25, ge=1, le=100),
                   min_rr: float = Query(default=2.0, ge=0),
                   min_turnover_cr: float = Query(default=2.0, ge=0),
-                  min_price: float = Query(default=30.0, ge=0)):
+                  min_price: float = Query(default=30.0, ge=0),
+                  variant: str = Query(default="checklist", pattern="^(checklist|turnaround)$")):
     """Descriptive daily technical-setup scorecard over the liquid NSE universe:
     trend, 20/50/100/200 SMA stack, RSI + MACD, volume vs average, VCP contraction,
     60-day breakout, nearby resistance, room toward the monthly R4 pivot, and
     risk:reward (scored to R4). A mechanical screen — NOT advice or a signal."""
-    key = f"scan:{min_rr}:{min_turnover_cr}:{min_price}"
+    key = f"scan:{variant}:{min_rr}:{min_turnover_cr}:{min_price}"
     hit, cached = CACHE.get(key, TTL_SCAN)
     if not hit:
         import strategy_scan as ss
         cfg = ss.Cfg(top=100, min_price=min_price,
                      min_turnover_cr=min_turnover_cr, min_rr=min_rr)
         try:
-            res = ss.build(cfg)
+            # "turnaround" = the Chartink EMA scan (weekly turnaround + daily trigger);
+            # it returns only today's SIGNALS, ranked by the checklist score as a tiebreak.
+            res = ss.build_turnaround(cfg) if variant == "turnaround" else ss.build(cfg)
         except FileNotFoundError:
             raise HTTPException(503, "panel.parquet not found — run ingest_bhavcopy.py first.")
         asof = str(pd.to_datetime(res["date"].max()).date()) if not res.empty else None
@@ -1302,10 +1305,16 @@ def strategy_scan(top: int = Query(default=25, ge=1, le=100),
                 vcp_set = {str(s).strip().upper() for s in pd.read_csv(vpath)["symbol"].tolist()}
             except Exception as exc:
                 log.warning("Could not read VCP list for the scanner: %s", exc)
+        def _row(r):
+            d = _scan_row(r, vcp_set)
+            if variant == "turnaround":
+                d["trigger"] = r.get("ta_trigger")
+                d["ema20"], d["ema50"], d["ema200"] = (round(float(r[k]), 2) for k in ("ema20", "ema50", "ema200"))
+            return d
         cached = {
-            "as_of": asof, "n_scored": int(len(res)),
+            "as_of": asof, "variant": variant, "n_scored": int(len(res)),
             "vcp_week": vcp_week, "vcp_symbols": sorted(vcp_set),
-            "candidates": [_scan_row(r, vcp_set) for _, r in res.head(100).iterrows()],
+            "candidates": [_row(r) for _, r in res.head(100).iterrows()],
             "params": {"min_rr": min_rr, "min_turnover_cr": min_turnover_cr, "min_price": min_price},
             "disclaimer": DISCLAIMER,
         }
@@ -1347,6 +1356,8 @@ class PaperIn(BaseModel):
     date: str | None = None
     note: str = ""
     score: float | None = None                # setup score at entry, if from a scan
+    strategy: str = "checklist"               # which paper book this trade belongs to
+    trigger: str | None = None                # e.g. "pullback20" for the turnaround book
 
 
 class PaperClose(BaseModel):
@@ -1375,6 +1386,7 @@ def _paper_row(t: dict, live: dict, rate: float) -> dict:
         "target": round(float(target), 2) if target else None,
         "stop": round(float(stop), 2) if stop else None,
         "date": t.get("date"), "note": t.get("note", ""), "score": t.get("score"),
+        "strategy": t.get("strategy", "checklist"), "trigger": t.get("trigger"),
         "status": "closed" if closed else "open",
         "mark": round(mark, 2), "stale": (not closed and px is None),
         "pnl_native": round(pnl_native, 2), "pnl_inr": round(pnl_native * fxm, 2),
@@ -1401,11 +1413,14 @@ def _paper_row(t: dict, live: dict, rate: float) -> dict:
 
 
 @app.get("/paper")
-def paper():
+def paper(strategy: str = Query(default=None)):
     """The mock-trading book with live marks: open positions (unrealized P&L,
     progress to target/stop) and closed trades (realized, R-multiple, win/loss),
-    plus strategy scorecard aggregates. Virtual only — no real orders."""
+    plus strategy scorecard aggregates. `strategy` filters to one paper book
+    (each Mock-trading page keeps its own). Virtual only — no real orders."""
     trades = load_paper()["trades"]
+    if strategy:
+        trades = [t for t in trades if t.get("strategy", "checklist") == strategy]
     rate = float(fetch_usdinr()["rate"])
     live = fetch_last_prices([t["symbol"] for t in trades if t.get("status") != "closed"]) if trades else {}
     rows = [_paper_row(t, live, rate) for t in trades]
@@ -1460,6 +1475,8 @@ def add_paper(p: PaperIn):
         "date": p.date or pd.Timestamp.now().strftime("%Y-%m-%d"),
         "note": (p.note or "").strip()[:200],
         "score": round(float(p.score), 1) if p.score is not None else None,
+        "strategy": (p.strategy or "checklist").strip()[:40],
+        "trigger": p.trigger or None,
         "status": "open",
     }
     doc = load_paper()

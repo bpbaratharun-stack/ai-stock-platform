@@ -331,7 +331,7 @@ export default function PortfolioV2() {
         <header className="top">
           <div className="brand">
             <h1>Portfolio</h1>
-            <nav className="nav"><Link className="on" to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link to="/v2/mock">Mock trading</Link></nav>
+            <nav className="nav"><Link className="on" to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link to="/v2/mock">Mock trading</Link><Link to="/v2/mock2">Mock trading 2</Link></nav>
           </div>
           <div className="controls">
             <div className="seg">
