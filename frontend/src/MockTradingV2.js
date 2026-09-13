@@ -23,22 +23,18 @@ const VARIANTS = {
     desc: null },
   turnaround: { title: "Mock trading 2", path: "/v2/mock2", scanTitle: "EMA turnaround scan",
     desc: "Weekly EMA20 / 50 / 200 all rising for 25 weeks, and EMA20 was below EMA200 30 weeks ago (a fresh turnaround, not an old leader). Shown when a daily trigger fires: EMA20 crosses EMA50, a pullback that touches EMA20 and closes above it, or EMA50 crosses EMA200." },
-  earnings: { title: "Mock trading 3", path: "/v2/mock3", scanTitle: "Earnings drift scan",
-    desc: "Stocks whose quarterly-results reaction (the 2 sessions around the results date) was +3% or more, within the last 2 sessions — buy the next open. The only input with a measured edge here: +1.6 to +1.8% over the universe at 20-40 sessions (2022-26, both halves), stronger when volume was 2x+ the average. Seasonal: empty outside the four results windows (mid-Jan, mid-Apr, mid-Jul, mid-Oct)." },
 };
 const TRIGGER_LABEL = { "cross20/50": "EMA20 ↗ EMA50", "pullback20": "Pullback to EMA20", "cross50/200": "EMA50 ↗ EMA200" };
 
 export default function MockTradingV2({ variant = "checklist" }) {
   const V = VARIANTS[variant] ?? VARIANTS.checklist;
   const isTurn = variant === "turnaround";
-  const isEarn = variant === "earnings";
-  const hasSignalCol = isTurn || isEarn;
+  const hasSignalCol = isTurn;
   const [scan, setScan] = useState(null);
   const [scanErr, setScanErr] = useState(null);
   const [book, setBook] = useState(null);
   const [minRr, setMinRr] = useState(2);
   const [size, setSize] = useState(100000);
-  const [lookback, setLookback] = useState(2);   // earnings scan: "reacted within the last N sessions"
   const [theme, setTheme] = useState("light");
   const [busy, setBusy] = useState(null);          // id/symbol currently mutating
   const [msg, setMsg] = useState(null);
@@ -50,11 +46,10 @@ export default function MockTradingV2({ variant = "checklist" }) {
 
   const loadScan = useCallback(() => {
     setScan(null); setScanErr(null);
-    axios.get(`${API_BASE}/strategy-scan?top=30&min_rr=${minRr}&variant=${variant}`
-      + (variant === "earnings" ? `&lookback=${lookback}` : ""))
+    axios.get(`${API_BASE}/strategy-scan?top=30&min_rr=${minRr}&variant=${variant}`)
       .then((r) => setScan(r.data))
       .catch((e) => setScanErr(e?.response?.data?.detail ?? "Scan failed."));
-  }, [minRr, variant, lookback]);
+  }, [minRr, variant]);
   const loadBook = useCallback(() => {
     axios.get(`${API_BASE}/paper?strategy=${variant}`).then((r) => setBook(r.data)).catch(() => {});
   }, [variant]);
@@ -103,7 +98,7 @@ export default function MockTradingV2({ variant = "checklist" }) {
         <header className="top">
           <div className="brand">
             <h1>Portfolio</h1>
-            <nav className="nav"><Link to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link className={variant === "checklist" ? "on" : ""} to="/v2/mock">Mock trading</Link><Link className={isTurn ? "on" : ""} to="/v2/mock2">Mock trading 2</Link><Link className={isEarn ? "on" : ""} to="/v2/mock3">Mock trading 3</Link></nav>
+            <nav className="nav"><Link to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link className={variant === "checklist" ? "on" : ""} to="/v2/mock">Mock trading</Link><Link className={isTurn ? "on" : ""} to="/v2/mock2">Mock trading 2</Link><Link to="/v2/sectors">Sectors</Link></nav>
           </div>
           <div className="controls">
             <button className="icon" onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))} title="Toggle theme">◐</button>
@@ -126,11 +121,8 @@ export default function MockTradingV2({ variant = "checklist" }) {
           <div className="tbl-h">
             <h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 600 }}>{V.scanTitle}</h3>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              {isEarn
-                ? <label className="check" style={{ gap: 5 }} title="Show reactions from the last N trading sessions. The live rule is 2; widen it to review the last results season.">reacted within
-                    <input value={lookback} onChange={(e) => setLookback(e.target.value.replace(/\D/g, "") || 1)} style={{ width: 46 }} inputMode="numeric" />sessions</label>
-                : <label className="check" style={{ gap: 5 }}>min R:R
-                    <input value={minRr} onChange={(e) => setMinRr(e.target.value)} style={{ width: 52 }} inputMode="decimal" /></label>}
+              <label className="check" style={{ gap: 5 }}>min R:R
+                <input value={minRr} onChange={(e) => setMinRr(e.target.value)} style={{ width: 52 }} inputMode="decimal" /></label>
               <label className="check" style={{ gap: 5 }}>size ₹
                 <input value={size} onChange={(e) => setSize(e.target.value)} style={{ width: 90 }} inputMode="numeric" /></label>
               <button className="btn" onClick={loadScan}>Rescan</button>
@@ -141,12 +133,12 @@ export default function MockTradingV2({ variant = "checklist" }) {
           </div>
           {V.desc && <div className="msg" style={{ paddingTop: 0, fontWeight: 400, color: "var(--muted)" }}>{V.desc}</div>}
           {scanErr && <div className="empty">{scanErr}</div>}
-          {scan && scan.candidates.length === 0 && <div className="empty">{isEarn ? "No fresh results reactions of +3% or more in the last 2 sessions. This scan is seasonal — expect signals in the results windows (mid-Jan, mid-Apr, mid-Jul, mid-Oct) and quiet weeks in between." : "No signals fired today — this rule waits for a fresh trigger, so empty days are normal."}</div>}
+          {scan && scan.candidates.length === 0 && <div className="empty">No signals fired today — this rule waits for a fresh trigger, so empty days are normal.</div>}
           {scan && (
             <div style={{ overflowX: "auto" }}>
               <table>
                 <thead><tr>
-                  <th>Score</th><th className="l">Stock</th>{hasSignalCol && <th className="l">{isEarn ? "Results reaction" : "Trigger"}</th>}<th className="l">Checklist</th>
+                  <th>Score</th><th className="l">Stock</th>{hasSignalCol && <th className="l">Trigger</th>}<th className="l">Checklist</th>
                   <th>Close</th><th>Stop</th><th>R4 target</th><th>Room→R4</th><th>R:R</th><th></th>
                 </tr></thead>
                 <tbody>
@@ -157,7 +149,6 @@ export default function MockTradingV2({ variant = "checklist" }) {
                         <td><span className={`score ${scoreCls(c.score)}`}>{Math.round(c.score)}</span></td>
                         <td className="l"><div className="stk"><div className="s">{c.symbol}</div><div className="i">{c.sector || "—"}</div></div></td>
                         {isTurn && <td className="l"><span className="badge nse" title={`EMA20 ${c.ema20} · EMA50 ${c.ema50} · EMA200 ${c.ema200}`}>{TRIGGER_LABEL[c.trigger] ?? c.trigger ?? "—"}</span></td>}
-                        {isEarn && <td className="l"><div className="stk"><div className="s"><span className={`badge ${c.band === "big UP" ? "nse" : "fund"}`}>{c.band}</span><span className="num pos">{c.reaction_pct >= 0 ? "+" : ""}{c.reaction_pct}%</span>{c.vol_ratio_react >= 2 && <span className="chk on" title={`reaction volume ${c.vol_ratio_react}x the 50-day average`}>Vol {c.vol_ratio_react}×</span>}</div><div className="i">results {c.results_date}{c.days_since > 0 ? ` · ${c.days_since} session${c.days_since === 1 ? "" : "s"} ago` : " · reacted today"}</div></div></td>}
                         <td className="l"><div className="chks">
                           <Chk ok={k.sma_stack === 4} warn={k.sma_stack >= 2 && k.sma_stack < 4} label={`SMA ${k.sma_stack}/4`} />
                           <Chk ok={k.trend} label="Trend" />

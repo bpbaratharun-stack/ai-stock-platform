@@ -14,6 +14,7 @@ import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react
 import PortfolioV2 from "./PortfolioV2";
 import BookingV2 from "./BookingV2";
 import MockTradingV2 from "./MockTradingV2";
+import SectorsV2 from "./SectorsV2";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -885,7 +886,7 @@ function Shell() {
   if (loc.pathname === "/v2/booked") return <BookingV2 />;
   if (loc.pathname === "/v2/mock") return <MockTradingV2 variant="checklist" />;
   if (loc.pathname === "/v2/mock2") return <MockTradingV2 variant="turnaround" />;
-  if (loc.pathname === "/v2/mock3") return <MockTradingV2 variant="earnings" />;
+  if (loc.pathname === "/v2/sectors") return <SectorsV2 />;
   return (
     <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: 24, fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box" }}>
       <div style={{ marginBottom: 20 }}>

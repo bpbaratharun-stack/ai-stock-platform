@@ -1602,6 +1602,186 @@ def remove_paper(trade_id: str):
     return {"ok": True, "removed": trade_id}
 
 
+# ======================================================== SECTOR HEAD/TAILWINDS
+# NSE publishes sector indices, which beat mapping 3,000 tickers to sectors by
+# hand: they are the market's own definition. Bellwethers are only used to pull
+# sector news (Yahoo carries no news for an index itself).
+NSE_SECTORS = [
+    ("Information Technology", "^CNXIT",      ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS"],          ["Technology"]),
+    ("Banking",                "^NSEBANK",    ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS"], ["Financial Services"]),
+    ("Automobile",             "^CNXAUTO",    ["MARUTI.NS", "TATAMOTORS.NS", "M&M.NS", "BAJAJ-AUTO.NS"], ["Consumer Cyclical"]),
+    ("Pharma & Healthcare",    "^CNXPHARMA",  ["SUNPHARMA.NS", "CIPLA.NS", "DRREDDY.NS", "DIVISLAB.NS"], ["Healthcare"]),
+    ("FMCG",                   "^CNXFMCG",    ["HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS"], ["Consumer Defensive"]),
+    ("Metals & Mining",        "^CNXMETAL",   ["TATASTEEL.NS", "HINDALCO.NS", "JSWSTEEL.NS", "VEDL.NS"], ["Basic Materials"]),
+    ("Realty",                 "^CNXREALTY",  ["DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PRESTIGE.NS"], ["Real Estate"]),
+    ("Energy & Power",         "^CNXENERGY",  ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS"],     ["Energy", "Utilities"]),
+    ("Infrastructure",         "^CNXINFRA",   ["LT.NS", "ULTRACEMCO.NS", "ADANIPORTS.NS", "GRASIM.NS"],  ["Industrials"]),
+    ("PSU Banks",              "^CNXPSUBANK", ["SBIN.NS", "BANKBARODA.NS", "PNB.NS", "CANBK.NS"],        []),
+    ("Media",                  "^CNXMEDIA",   ["SUNTV.NS", "PVRINOX.NS", "ZEEL.NS", "NAZARA.NS"],        ["Communication Services"]),
+]
+BENCH_TICKER = "^NSEI"          # Nifty 50: the "market" a sector is measured against
+TTL_SECTORS = 1800              # 30 min — prices move intraday, news slower
+MAX_NEWS_AGE_DAYS = 45          # Yahoo's NSE coverage is patchy; a year-old story is
+                                # not news, so drop it rather than show it as context
+WIND_BAND = 3.0                 # |relative 1-month move| under this = neither wind.
+                                # 1.5 was too tight: in a month the Nifty fell 4%, most
+                                # sectors fell less, and 8 of 11 read as "tailwind".
+
+
+def _news_by_ticker(tickers: list[str]) -> dict:
+    """One parallel fetch for every bellwether across all sectors (tickers repeat
+    between sectors, e.g. SBIN), so the page costs a single round of calls."""
+    uniq = sorted(set(tickers))
+    try:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            return dict(zip(uniq, ex.map(_one_ticker_news, uniq)))
+    except Exception as exc:
+        log.warning("sector news fetch failed: %s", exc)
+        return {}
+
+
+def _sector_news(tickers: list[str], pool: dict, limit: int = 4) -> list[dict]:
+    """A sector's recent stories: its bellwethers' news pooled, de-duplicated by
+    headline, stale items dropped, newest first. Yahoo serves no news for an
+    index itself, hence the constituents."""
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=MAX_NEWS_AGE_DAYS)
+    out, seen = [], set()
+    for t in tickers:
+        for it in pool.get(t, []):
+            key = (it.get("title") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            try:
+                if pd.Timestamp(it["published"]).tz_convert("UTC") < cutoff:
+                    continue
+            except Exception:
+                continue                       # undated: cannot vouch for it, skip
+            seen.add(key)
+            out.append(it)
+    out.sort(key=lambda x: x.get("published") or "", reverse=True)
+    return out[:limit]
+
+
+def _one_ticker_news(t: str) -> list[dict]:
+    try:
+        raw = yf.Ticker(t).news or []
+    except Exception:
+        return []
+    rows = []
+    for n in raw:
+        c = n.get("content") or n
+        if c.get("contentType") not in (None, "STORY"):
+            continue
+        url = ((c.get("clickThroughUrl") or c.get("canonicalUrl") or {}) or {}).get("url")
+        rows.append({
+            "title": c.get("title"),
+            "summary": (c.get("summary") or c.get("description") or "")[:280],
+            "publisher": ((c.get("provider") or {}) or {}).get("displayName"),
+            "published": c.get("pubDate") or c.get("displayTime"),
+            "url": url,
+            "source_ticker": t.replace(".NS", ""),
+        })
+    return [r for r in rows if r["title"]]
+
+
+def _holdings_by_yf_sector() -> dict:
+    """{yfinance sector: value_inr} for the current book — lets the page say which
+    winds you are actually exposed to."""
+    try:
+        doc = load_holdings()
+    except HTTPException:
+        return {}
+    positions = [p for p in doc["positions"]
+                 if str(p.get("exchange", "NSE")).upper() not in ("MF", "USMF")]
+    if not positions:
+        return {}
+    rate = float(fetch_usdinr()["rate"])
+    prices = fetch_last_prices([p["symbol"] for p in positions])
+    secmap = sectors_for([str(p["symbol"]).upper() for p in positions])
+    out = {}
+    for p in positions:
+        sym = str(p["symbol"]).upper()
+        fxm = rate if str(p.get("exchange", "NSE")).upper() == "US" else 1.0
+        px = prices.get(sym)
+        last = px["last"] if px else float(p.get("avg_price", 0))
+        sec = (secmap.get(sym) or {}).get("sector")
+        if sec:
+            out[sec] = out.get(sec, 0.0) + float(p.get("qty", 0)) * last * fxm
+    return out
+
+
+@app.get("/sectors", operation_id="sector_winds")
+def sectors(news: bool = Query(default=True)):
+    """Sector tailwinds and headwinds: each NSE sector index vs the Nifty 50 over
+    1 week / 1 month / 3 months, plus recent news per sector and how much of your
+    own book sits in it. A sector is only a TAILWIND if it is beating the market —
+    in a falling market everything is down, which says nothing about the sector.
+    Descriptive; not advice."""
+    hit, cached = CACHE.get(f"sectors:{news}", TTL_SECTORS)
+    if hit:
+        return cached
+
+    tickers = [t for _, t, _, _ in NSE_SECTORS]
+    try:
+        raw = yf.download(tickers + [BENCH_TICKER], period="6mo", progress=False,
+                          group_by="ticker", auto_adjust=False, timeout=45)
+    except Exception as exc:
+        raise HTTPException(502, f"Sector index fetch failed: {exc}")
+
+    def series(t):
+        try:
+            return raw[t]["Close"].dropna()
+        except Exception:
+            return None
+
+    def ret(c, n):
+        return (float(c.iloc[-1]) / float(c.iloc[-1 - n]) - 1) * 100 if (c is not None and len(c) > n) else None
+
+    bench = series(BENCH_TICKER)
+    b1w, b1m, b3m = ret(bench, 5), ret(bench, 21), ret(bench, 63)
+    held = _holdings_by_yf_sector()
+    total_held = sum(held.values()) or 1.0
+
+    pool = _news_by_ticker([t for _, _, bells, _ in NSE_SECTORS for t in bells]) if news else {}
+    rows = []
+    for name, tkr, bells, yf_secs in NSE_SECTORS:
+        c = series(tkr)
+        r1w, r1m, r3m = ret(c, 5), ret(c, 21), ret(c, 63)
+        if r1m is None:
+            continue                                   # index not resolving today
+        rel1m = r1m - (b1m or 0.0)
+        wind = "tailwind" if rel1m >= WIND_BAND else "headwind" if rel1m <= -WIND_BAND else "neutral"
+        exposure = sum(held.get(s, 0.0) for s in yf_secs)
+        rows.append({
+            "sector": name, "ticker": tkr, "wind": wind,
+            "ret_1w": round(r1w, 2) if r1w is not None else None,
+            "ret_1m": round(r1m, 2),
+            "ret_3m": round(r3m, 2) if r3m is not None else None,
+            "rel_1w": round(r1w - (b1w or 0.0), 2) if r1w is not None else None,
+            "rel_1m": round(rel1m, 2),
+            "rel_3m": round(r3m - (b3m or 0.0), 2) if r3m is not None else None,
+            "your_value_inr": round(exposure, 2),
+            "your_weight_pct": round(exposure / total_held * 100, 1),
+            "news": _sector_news(bells, pool) if news else [],
+        })
+    rows.sort(key=lambda r: r["rel_1m"], reverse=True)
+
+    result = {
+        "as_of": str(pd.Timestamp.now().date()),
+        "benchmark": {"name": "Nifty 50", "ret_1w": round(b1w, 2) if b1w else None,
+                      "ret_1m": round(b1m, 2) if b1m else None,
+                      "ret_3m": round(b3m, 2) if b3m else None},
+        "sectors": rows,
+        "note": ("Wind = the sector index versus the Nifty 50 over 1 month; "
+                 f"beyond +/-{WIND_BAND}% it is a tailwind or a headwind, inside that band neither. "
+                 "'Your exposure' maps your holdings' yfinance sector onto the nearest NSE "
+                 "sector index, so it is approximate, and mutual funds are excluded."),
+        "disclaimer": DISCLAIMER,
+    }
+    CACHE.set(f"sectors:{news}", result)
+    return result
+
+
 def _reduce_holding(sym: str, exch: str, qty: float):
     """Reduce a holding's quantity after a booked sell; remove it if fully closed."""
     try:
