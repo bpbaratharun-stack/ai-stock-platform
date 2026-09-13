@@ -84,6 +84,7 @@ def prepare(cfg) -> pd.DataFrame:
     df["signal"] = {"pullback": df.get("signal_pullback"),
                     "turnaround": df.get("signal_turnaround")}.get(cfg.variant, df["signal_breakout"])
     df["week"] = df["date"].dt.to_period("W-FRI")
+    df["pos"] = df.groupby("symbol", observed=True).cumcount()   # row index within its symbol
     return df
 
 
@@ -93,6 +94,60 @@ def pick_signals(df: pd.DataFrame, cfg) -> pd.DataFrame:
         sig = (sig.sort_values(["date", "score"], ascending=[True, False])
                   .groupby("date", observed=True).head(cfg.top_per_day))
     return sig
+
+
+def simulate_exits(df: pd.DataFrame, sig: pd.DataFrame, cfg) -> pd.DataFrame:
+    """Path-dependent exit for each signal, same entry as the hold test.
+    Sell at the NEXT session's OPEN after the first CLOSE below the stop (you see
+    the close, you sell next morning - no same-day fills); otherwise exit at the
+    +H close exactly like the hold test. Stop = the scanner's structure stop
+    (20-day swing low, else 50-DMA) for --exit stop, or entry*(1-pct) for --exit pct."""
+    by_sym = {sym: (g["open"].to_numpy(), g["close"].to_numpy())
+              for sym, g in df.groupby("symbol", observed=True)}
+    pos, syms, entry = sig["pos"].to_numpy(), sig["symbol"].to_numpy(), sig["entry"].to_numpy()
+    stop = sig["stop"].to_numpy() if cfg.exit == "stop" else entry * (1 - cfg.stop_pct / 100)
+    sret = {h: np.full(len(sig), np.nan) for h in HORIZONS}
+    stopped = {h: np.zeros(len(sig), dtype=bool) for h in HORIZONS}
+    H = max(HORIZONS)
+    for n, (sym, i, e, st) in enumerate(zip(syms, pos, entry, stop)):
+        op, cl = by_sym[sym]
+        N = len(cl)
+        if i + 1 >= N or not np.isfinite(e) or not np.isfinite(st):
+            continue
+        hit = None
+        for k in range(i + 1, min(i + H, N - 1) + 1):      # from the entry day onward
+            if cl[k] < st:
+                hit = k
+                break
+        for h in HORIZONS:
+            end = i + h
+            if end > N - 1:
+                continue                                   # unresolved: not enough forward data
+            if hit is not None and hit <= end and hit + 1 <= N - 1:
+                sret[h][n] = (op[hit + 1] / e - 1) * 100   # next-open fill after the stop close
+                stopped[h][n] = True
+            else:
+                sret[h][n] = (cl[end] / e - 1) * 100
+    for h in HORIZONS:
+        sig[f"sret{h}"] = sret[h]
+        sig[f"stopped{h}"] = stopped[h]
+    return sig
+
+
+def _stats(df: pd.DataFrame, sig: pd.DataFrame, col: str, bench_col: str):
+    """Week-clustered stats for one return column vs the universe's fixed-horizon
+    buy-hold return that same week (the market you could have had instead)."""
+    s = sig.dropna(subset=[col])
+    if s.empty:
+        return None
+    bench = df[df["universe"]].dropna(subset=[bench_col]).groupby("date", observed=True)[bench_col].mean()
+    s = s.assign(bench=s["date"].map(bench)).dropna(subset=["bench"])
+    wk = s.groupby("week", observed=True).agg(ret=(col, "mean"), bench=("bench", "mean"))
+    return dict(n=len(s), weeks=len(wk), avg=wk["ret"].mean(), med=s[col].median(),
+                win=(s[col] > 0).mean() * 100, univ=wk["bench"].mean(),
+                edge=(wk["ret"] - wk["bench"]).mean(), wks=(wk["ret"] > wk["bench"]).mean() * 100,
+                p10=s[col].quantile(.10), p90=s[col].quantile(.90), worst=s[col].min(),
+                bad=(s[col] < -10).mean() * 100)
 
 
 def report(df: pd.DataFrame, sig: pd.DataFrame, cfg):
@@ -132,6 +187,27 @@ def report(df: pd.DataFrame, sig: pd.DataFrame, cfg):
         print(f"  {h:>5}d {len(s):>7,} {len(wk):>6,} {avg:>+7.2f} {med:>+7.2f} {win:>4.0f}% "
               f"{rupees:>+12,.0f} {wk['bench'].mean():>+7.2f} {edge:>+7.2f} {wks_pos:>4.0f}%  "
               f"{p10:>+6.1f} {p90:>+6.1f} {worst:>+7.1f} {bad:>5.0f}%  {read}")
+
+    if cfg.exit != "hold":
+        lab = ("structure stop = 20d swing low / 50-DMA at signal" if cfg.exit == "stop"
+               else f"fixed stop = entry - {cfg.stop_pct:g}%")
+        print()
+        print(f"  --- SAME trades with a STOP exit ({lab}); sell next open after a close below it ---")
+        print(f"  {'hold':>6} {'trades':>7} {'stop%':>6} {'avg%':>7} {'med%':>7} {'win%':>5} "
+              f"{'Rs on ' + f'{amt/1000:.0f}k':>12} {'EDGE%':>7} {'wks+':>5}  "
+              f"{'p10%':>6} {'p90%':>6} {'worst%':>7} {'<-10%':>6}  {'vs hold':>8}")
+        for h in HORIZONS:
+            st = _stats(df, sig, f"sret{h}", f"ret{h}")
+            ho = _stats(df, sig, f"ret{h}", f"ret{h}")
+            if st is None:
+                print(f"  {h:>5}d  (no resolved trades yet)")
+                continue
+            stopped = sig.dropna(subset=[f"sret{h}"])[f"stopped{h}"].mean() * 100
+            delta = st["avg"] - ho["avg"]
+            print(f"  {h:>5}d {st['n']:>7,} {stopped:>5.0f}% {st['avg']:>+7.2f} {st['med']:>+7.2f} {st['win']:>4.0f}% "
+                  f"{amt*st['avg']/100:>+12,.0f} {st['edge']:>+7.2f} {st['wks']:>4.0f}%  "
+                  f"{st['p10']:>+6.1f} {st['p90']:>+6.1f} {st['worst']:>+7.1f} {st['bad']:>5.0f}%  {delta:>+8.2f}")
+        print("  stop% = share of trades that hit the stop before the horizon; vs hold = avg% minus the hold avg% above.")
 
     print(f"\n  avg% / Rs = week-clustered mean return of the signals (what Rs {amt:,.0f} earns).")
     print("  univ% = the same-horizon return of EVERY gate-passing stock that week.")
@@ -177,6 +253,10 @@ def main():
     p.add_argument("--min-price", type=float, default=30.0)
     p.add_argument("--min-turnover-cr", type=float, default=2.0)
     p.add_argument("--date", type=str, default=None, help="Show one day's picks and their realized reward.")
+    p.add_argument("--exit", choices=["hold", "stop", "pct"], default="hold",
+                   help="hold = fixed horizon (default); stop = the scanner's structure stop "
+                        "(20d swing low / 50-DMA); pct = fixed percentage stop (--stop-pct).")
+    p.add_argument("--stop-pct", type=float, default=8.0, help="Stop distance for --exit pct (default 8).")
     p.add_argument("--variant", choices=["breakout", "pullback", "turnaround"], default="breakout",
                    help="breakout = the live scanner's checklist score; pullback = buy a quiet dip "
                         "to the 20-DMA inside an intact uptrend (default: breakout).")
@@ -185,7 +265,10 @@ def main():
     if cfg.date:
         report_date(df, cfg)
     else:
-        report(df, pick_signals(df, cfg), cfg)
+        sig = pick_signals(df, cfg)
+        if cfg.exit != "hold":
+            sig = simulate_exits(df, sig, cfg)
+        report(df, sig, cfg)
 
 
 if __name__ == "__main__":
