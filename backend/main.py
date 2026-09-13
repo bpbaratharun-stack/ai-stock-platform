@@ -1241,6 +1241,49 @@ def alerts(dma: int = Query(default=50, ge=5, le=200),
 
 
 TTL_SCAN = 3600   # strategy scorecard cached 1h (heavy compute over the full panel)
+SCAN_DISK_DIR = os.path.join(os.path.dirname(SCORES_PATH), "scan_cache")
+
+
+def _panel_fingerprint() -> str | None:
+    """Identity of the price panel: a scan is reproducible exactly while the file
+    is unchanged, so (mtime, size) is a safe cache key - it can never serve a
+    result computed from older data."""
+    panel = os.path.join(os.path.dirname(SCORES_PATH), "panel.parquet")
+    try:
+        st = os.stat(panel)
+        return f"{int(st.st_mtime_ns)}-{st.st_size}"
+    except OSError:
+        return None
+
+
+def _scan_disk_load(key: str):
+    """Survive a server restart: the in-memory cache dies with the process, and
+    recomputing costs ~40s per variant. Returns None on any miss/mismatch."""
+    fp = _panel_fingerprint()
+    if fp is None:
+        return None
+    path = os.path.join(SCAN_DISK_DIR, re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return doc["payload"] if doc.get("fingerprint") == fp else None
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _scan_disk_save(key: str, payload: dict) -> None:
+    fp = _panel_fingerprint()
+    if fp is None or not payload:          # never clobber a good file with an empty result
+        return
+    path = os.path.join(SCAN_DISK_DIR, re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".json")
+    try:
+        os.makedirs(SCAN_DISK_DIR, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"fingerprint": fp, "payload": payload}, fh)
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("scan disk cache save failed: %s", exc)
 
 
 def _scan_row(r, vcp_set: set | None = None) -> dict:
@@ -1288,6 +1331,11 @@ def strategy_scan(top: int = Query(default=25, ge=1, le=100),
     key = f"scan:{variant}:{min_rr}:{min_turnover_cr}:{min_price}:{lookback}:{min_react}"
     hit, cached = CACHE.get(key, TTL_SCAN)
     if not hit:
+        cached = _scan_disk_load(key)          # survives a restart while the panel is unchanged
+        hit = cached is not None
+        if hit:
+            CACHE.set(key, cached)
+    if not hit:
         import strategy_scan as ss
         cfg = ss.Cfg(top=100, min_price=min_price,
                      min_turnover_cr=min_turnover_cr, min_rr=min_rr)
@@ -1332,6 +1380,7 @@ def strategy_scan(top: int = Query(default=25, ge=1, le=100),
             "disclaimer": DISCLAIMER,
         }
         CACHE.set(key, cached)
+        _scan_disk_save(key, cached)       # so the next server start is instant
     out = dict(cached)
     out["candidates"] = cached["candidates"][:top]
     return out

@@ -15,3 +15,7 @@ backend/data/paper_trades.json
 
 # Derived sector lookup cache (yfinance)
 backend/data/sector_cache.json
+
+# Derived scan cache (regenerated from panel.parquet) and winner-study output
+backend/data/scan_cache/
+backend/data/weekly_winners.csv
