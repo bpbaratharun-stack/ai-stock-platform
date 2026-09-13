@@ -1278,12 +1278,14 @@ def strategy_scan(top: int = Query(default=25, ge=1, le=100),
                   min_rr: float = Query(default=2.0, ge=0),
                   min_turnover_cr: float = Query(default=2.0, ge=0),
                   min_price: float = Query(default=30.0, ge=0),
-                  variant: str = Query(default="checklist", pattern="^(checklist|turnaround)$")):
+                  variant: str = Query(default="checklist", pattern="^(checklist|turnaround|earnings)$"),
+                  lookback: int = Query(default=2, ge=1, le=60),
+                  min_react: float = Query(default=3.0, ge=0)):
     """Descriptive daily technical-setup scorecard over the liquid NSE universe:
     trend, 20/50/100/200 SMA stack, RSI + MACD, volume vs average, VCP contraction,
     60-day breakout, nearby resistance, room toward the monthly R4 pivot, and
     risk:reward (scored to R4). A mechanical screen — NOT advice or a signal."""
-    key = f"scan:{variant}:{min_rr}:{min_turnover_cr}:{min_price}"
+    key = f"scan:{variant}:{min_rr}:{min_turnover_cr}:{min_price}:{lookback}:{min_react}"
     hit, cached = CACHE.get(key, TTL_SCAN)
     if not hit:
         import strategy_scan as ss
@@ -1292,10 +1294,14 @@ def strategy_scan(top: int = Query(default=25, ge=1, le=100),
         try:
             # "turnaround" = the Chartink EMA scan (weekly turnaround + daily trigger);
             # it returns only today's SIGNALS, ranked by the checklist score as a tiebreak.
-            res = ss.build_turnaround(cfg) if variant == "turnaround" else ss.build(cfg)
+            # "earnings" = fresh post-results reactions (the one input with a measured edge)
+            res = (ss.build_turnaround(cfg) if variant == "turnaround"
+                   else ss.build_earnings(cfg, lookback=lookback, min_react=min_react) if variant == "earnings"
+                   else ss.build(cfg))
         except FileNotFoundError:
             raise HTTPException(503, "panel.parquet not found — run ingest_bhavcopy.py first.")
-        asof = str(pd.to_datetime(res["date"].max()).date()) if not res.empty else None
+        asof = (str(pd.to_datetime(res["date"].max()).date()) if not res.empty
+                else (STORE.scored_date if STORE is not None else None))   # empty scan: still date it
         # genuine-VCP list = the weekly screen's latest signals (what the VCP tab shows)
         vcp_set, vcp_week = set(), None
         files = _vcp_files()
@@ -1310,6 +1316,13 @@ def strategy_scan(top: int = Query(default=25, ge=1, le=100),
             if variant == "turnaround":
                 d["trigger"] = r.get("ta_trigger")
                 d["ema20"], d["ema50"], d["ema200"] = (round(float(r[k]), 2) for k in ("ema20", "ema50", "ema200"))
+            if variant == "earnings":
+                d["results_date"] = r.get("results_date")
+                d["reaction_pct"] = r.get("reaction_pct")
+                d["vol_ratio_react"] = r.get("vol_ratio_react")
+                d["days_since"] = int(r.get("days_since", 0))
+                d["band"] = r.get("band")
+                d["trigger"] = f"results {d['band']} {d['reaction_pct']:+.1f}%"
             return d
         cached = {
             "as_of": asof, "variant": variant, "n_scored": int(len(res)),

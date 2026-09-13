@@ -261,6 +261,76 @@ def build_turnaround(cfg) -> pd.DataFrame:
     return last.sort_values("score", ascending=False)
 
 
+# --------------------------------------------------------------------------- #
+# Variant: "earnings drift" - the one input with a measured edge (earnings_drift.py)
+# --------------------------------------------------------------------------- #
+def build_earnings(cfg, lookback: int = 2, min_react: float = 3.0) -> pd.DataFrame:
+    """Live scan: stocks whose quarterly RESULTS reaction just completed.
+
+    reaction = close(first session after the results date) / close(last session
+    before it) - 1, a 2-session window. A signal is a reaction >= min_react%
+    whose reaction session was within the last `lookback` sessions (so today's
+    close is, or nearly is, the reaction close and the entry is the next open -
+    exactly the setup earnings_drift.py measured: +1.6-1.8% vs the universe at
+    20-40 sessions for reactions of +3% and above, stronger with volume).
+
+    Seasonal by nature: outside the four results windows this list is empty.
+    Needs nse_results_dates.json kept current (nse_results_dates.py --refresh,
+    ~9 min for the cached names; run it after each results season)."""
+    from weekly_momentum import load_results_map
+    df = pd.read_parquet(PANEL, columns=["date", "symbol", "sector", "open",
+                                         "high", "low", "close", "volume", "turnover"])
+    df = df[~df["symbol"].str.contains(ETF_RE, na=False)]
+    df = compute(df)
+    df = monthly_pivots(df)
+    rmap = load_results_map()
+    last_day = df["date"].max().date()
+    recent_cut = last_day - pd.Timedelta(days=lookback * 3 + 10)   # cheap pre-filter on dates
+    by_sym = {s: g for s, g in df.groupby("symbol", observed=True)}
+    rows = []
+    for sym, dates in rmap.items():
+        g = by_sym.get(f"{sym}.NS")
+        if g is None:
+            continue
+        cand = [D for D in dates if D >= recent_cut]
+        if not cand:
+            continue
+        d = g["date"].dt.date.to_numpy()
+        cl, vol, va = g["close"].to_numpy(), g["volume"].to_numpy(), g["volavg50"].to_numpy()
+        n = len(d)
+        for D in cand:
+            b = np.searchsorted(d, D, side="left") - 1             # last session BEFORE D
+            a = np.searchsorted(d, D, side="right")                # first session AFTER D
+            if b < 0 or a >= n or a - b > 6:
+                continue                                           # not reacted yet / data gap
+            # CALENDAR guard: a suspended stock's rows look adjacent even across a
+            # months-long gap, which would book the whole gap move as the "reaction".
+            if (d[a] - D).days > 7 or (D - d[b]).days > 7:
+                continue
+            days_since = (n - 1) - a                               # sessions since the reaction close
+            if days_since > lookback - 1:
+                continue
+            react = (cl[a] / cl[b] - 1) * 100
+            if react < min_react:
+                continue
+            vr = (vol[b + 1:a + 1].mean() / va[b]) if (np.isfinite(va[b]) and va[b] > 0) else np.nan
+            row = g.iloc[-1].to_dict()                             # today's bar + indicators
+            row.update(results_date=str(D), reaction_pct=round(float(react), 2),
+                       vol_ratio_react=(round(float(vr), 2) if np.isfinite(vr) else None),
+                       days_since=int(days_since),
+                       band=("big UP" if react > 8 else "up"))
+            rows.append(row)
+    last = pd.DataFrame(rows)
+    if last.empty:
+        return last
+    last = last[(last["close"] >= cfg.min_price) & (last["med_turnover"] >= cfg.min_turnover_cr * RS_CR)].copy()
+    if last.empty:
+        return last
+    last = add_scores(last, cfg.min_rr)
+    last["symbol"] = last["symbol"].str.replace(".NS", "", regex=False).str.replace(".BO", "", regex=False)
+    return last.sort_values("reaction_pct", ascending=False)
+
+
 class Cfg:
     def __init__(self, top=25, min_price=30.0, min_turnover_cr=2.0, min_rr=2.0, window_days=520):
         self.top, self.min_price, self.min_turnover_cr = top, min_price, min_turnover_cr

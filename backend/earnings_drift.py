@@ -75,6 +75,10 @@ def build_events(df: pd.DataFrame, cfg) -> pd.DataFrame:
             a = np.searchsorted(d, D, side="right")               # first session AFTER D
             if b < 5 or a >= len(d) or a - b > 6 or a + 1 >= len(d):
                 continue                                           # off the edges / data gap
+            # CALENDAR guard: adjacent ROWS can still straddle a months-long
+            # trading gap (suspension), which would book the gap as the reaction.
+            if (d[a] - D).days > 7 or (D - d[b]).days > 7:
+                continue
             if not uni[b]:
                 continue                                           # not investable at the time
             react = (cl[a] / cl[b] - 1) * 100

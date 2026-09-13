@@ -885,6 +885,7 @@ function Shell() {
   if (loc.pathname === "/v2/booked") return <BookingV2 />;
   if (loc.pathname === "/v2/mock") return <MockTradingV2 variant="checklist" />;
   if (loc.pathname === "/v2/mock2") return <MockTradingV2 variant="turnaround" />;
+  if (loc.pathname === "/v2/mock3") return <MockTradingV2 variant="earnings" />;
   return (
     <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: 24, fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box" }}>
       <div style={{ marginBottom: 20 }}>
