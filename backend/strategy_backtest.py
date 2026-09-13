@@ -107,7 +107,8 @@ def report(df: pd.DataFrame, sig: pd.DataFrame, cfg):
           f"({'top ' + str(cfg.top_per_day) + ' per day' if cfg.top_per_day else 'all fresh triggers'})")
     print(f"  universe gate: price >= Rs {cfg.min_price}, median turnover >= Rs {cfg.min_turnover_cr} cr\n")
     print(f"  {'hold':>6} {'trades':>7} {'weeks':>6} {'avg%':>7} {'med%':>7} {'win%':>5} "
-          f"{'Rs on ' + f'{amt/1000:.0f}k':>12} {'univ%':>7} {'EDGE%':>7} {'wks+':>5}  read")
+          f"{'Rs on ' + f'{amt/1000:.0f}k':>12} {'univ%':>7} {'EDGE%':>7} {'wks+':>5}  "
+          f"{'p10%':>6} {'p90%':>6} {'worst%':>7} {'<-10%':>6}  read")
 
     for h in HORIZONS:
         col = f"ret{h}"
@@ -126,13 +127,17 @@ def report(df: pd.DataFrame, sig: pd.DataFrame, cfg):
         wks_pos = (wk["ret"] > wk["bench"]).mean() * 100
         rupees = amt * avg / 100
         read = ("edge" if edge > 1.0 else "no edge" if edge < 0.25 else "marginal")
+        p10, p90, worst = s[col].quantile(.10), s[col].quantile(.90), s[col].min()
+        bad = (s[col] < -10).mean() * 100                  # share of trades losing >10%
         print(f"  {h:>5}d {len(s):>7,} {len(wk):>6,} {avg:>+7.2f} {med:>+7.2f} {win:>4.0f}% "
-              f"{rupees:>+12,.0f} {wk['bench'].mean():>+7.2f} {edge:>+7.2f} {wks_pos:>4.0f}%  {read}")
+              f"{rupees:>+12,.0f} {wk['bench'].mean():>+7.2f} {edge:>+7.2f} {wks_pos:>4.0f}%  "
+              f"{p10:>+6.1f} {p90:>+6.1f} {worst:>+7.1f} {bad:>5.0f}%  {read}")
 
     print(f"\n  avg% / Rs = week-clustered mean return of the signals (what Rs {amt:,.0f} earns).")
     print("  univ% = the same-horizon return of EVERY gate-passing stock that week.")
     print("  EDGE  = avg% - univ%: the part you can credit to the checklist, not the market.")
     print("  med%  = median trade — expect it below the mean; setups pay through a few big winners.")
+    print("  p10/p90 = the 10th/90th percentile trade; worst = single worst trade; <-10% = share of trades down >10%.")
     print("\n  Before costs/taxes; survivorship-optimistic in absolute terms. NOT advice.")
 
 
