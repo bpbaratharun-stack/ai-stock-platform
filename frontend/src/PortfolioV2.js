@@ -302,10 +302,20 @@ export default function PortfolioV2() {
     return (
       <div className="pf" data-pf-theme={theme}><style>{PF2_CSS}</style>
         <div className="wrap">
-          <div className="panel" style={{ maxWidth: 360, margin: "90px auto 0", padding: "30px 28px", textAlign: "center" }}>
+          {/* only Overview is locked — keep the menu so the other pages stay reachable */}
+          <header className="top">
+            <div className="brand">
+              <h1>Portfolio</h1>
+              <nav className="nav"><Link className="on" to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link to="/v2/mock">Mock trading</Link><Link to="/v2/mock2">Mock trading 2</Link><Link to="/v2/sectors">Sectors</Link></nav>
+            </div>
+            <div className="controls">
+              <button className="icon" onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))} title="Toggle theme">◐</button>
+            </div>
+          </header>
+          <div className="panel" style={{ maxWidth: 360, margin: "50px auto 0", padding: "30px 28px", textAlign: "center" }}>
             <div style={{ fontSize: 30 }}>🔒</div>
             <h2 style={{ fontFamily: "var(--ser)", fontWeight: 500, margin: "8px 0 4px" }}>Portfolio locked</h2>
-            <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 18 }}>Enter your PIN to view your holdings.</div>
+            <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 18 }}>Enter your PIN to view your holdings. The other pages in the menu stay open.</div>
             <input type="password" value={pin} autoFocus inputMode="numeric" placeholder="••••" maxLength={8}
               onChange={(e) => { setPin(e.target.value.replace(/\D/g, "")); setLockMsg(null); }}
               onKeyDown={(e) => e.key === "Enter" && doUnlock()}
