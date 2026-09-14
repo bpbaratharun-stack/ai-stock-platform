@@ -178,6 +178,18 @@ export const PF2_CSS = `
 @media(max-width:820px){.pf .hero,.pf .two{grid-template-columns:1fr}.pf .kpis{grid-template-columns:repeat(2,1fr)}.pf .alloc{grid-template-columns:1fr}}
 `;
 
+// Passcode lock. Only a SHA-256 of the PIN is stored (crypto.subtle works on localhost,
+// a secure context), under the same keys the classic portfolio view used — so a PIN set
+// there still unlocks this page. Unlocking lasts for the browser session.
+// It is a privacy screen for this browser, not server security: the API itself is
+// unauthenticated and only reachable from this machine (127.0.0.1).
+const PIN_KEY = "pfPinHash", UNLOCK_KEY = "pfUnlocked";
+const safeGet = (store, k) => { try { return store.getItem(k); } catch { return null; } };
+async function sha256(str) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export default function PortfolioV2() {
   const [data, setData] = useState(null);
   const [alloc, setAlloc] = useState(null);
@@ -196,6 +208,39 @@ export default function PortfolioV2() {
   const [editVals, setEditVals] = useState({ qty: "", avg_price: "" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+  // passcode lock
+  const [pinHash, setPinHash] = useState(() => safeGet(localStorage, PIN_KEY));
+  const [unlocked, setUnlocked] = useState(() => !safeGet(localStorage, PIN_KEY) || safeGet(sessionStorage, UNLOCK_KEY) === "1");
+  const [pin, setPin] = useState("");
+  const [pin2, setPin2] = useState("");
+  const [pinSetup, setPinSetup] = useState(false);
+  const [lockMsg, setLockMsg] = useState(null);
+
+  const doUnlock = async () => {
+    if (pin && (await sha256(pin)) === pinHash) {
+      try { sessionStorage.setItem(UNLOCK_KEY, "1"); } catch {}
+      setUnlocked(true); setPin(""); setLockMsg(null);
+    } else { setPin(""); setLockMsg("Wrong PIN."); }
+  };
+  const doSetup = async () => {
+    if (!/^\d{4,8}$/.test(pin)) { setLockMsg("PIN must be 4–8 digits."); return; }
+    if (pin !== pin2) { setLockMsg("The two PINs don't match."); return; }
+    const h = await sha256(pin);
+    try { localStorage.setItem(PIN_KEY, h); sessionStorage.setItem(UNLOCK_KEY, "1"); } catch {}
+    setPinHash(h); setUnlocked(true); setPinSetup(false); setPin(""); setPin2("");
+    setLockMsg("Lock enabled — this page will ask for the PIN in each new browser session.");
+  };
+  const lockNow = () => {
+    try { sessionStorage.removeItem(UNLOCK_KEY); } catch {}
+    // drop the loaded figures so nothing sensitive stays rendered behind the lock
+    setData(null); setAlloc(null); setDiv(null); setHist(null); setAlerts(null); setBooked(null);
+    setUnlocked(false); setPin(""); setLockMsg(null); setShowAdd(false); setEditKey(null);
+  };
+  const removeLock = () => {
+    if (!window.confirm("Remove the portfolio PIN? Anyone using this browser will be able to see your holdings.")) return;
+    try { localStorage.removeItem(PIN_KEY); sessionStorage.removeItem(UNLOCK_KEY); } catch {}
+    setPinHash(null); setUnlocked(true); setLockMsg("Lock removed.");
+  };
 
   useEffect(() => {
     const l = document.createElement("link"); l.rel = "stylesheet"; l.href = FONTS;
@@ -206,7 +251,7 @@ export default function PortfolioV2() {
     g("/portfolio", setData); g("/allocation", setAlloc); g("/dividends", setDiv);
     g("/portfolio-history?months=6", setHist); g("/alerts?dma=50&confirm=2", setAlerts); g("/booked", setBooked);
   }, []);
-  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => { if (unlocked) loadAll(); }, [loadAll, unlocked]);   // nothing is fetched while locked
 
   const addShares = async (e) => {
     e?.preventDefault();
@@ -253,6 +298,26 @@ export default function PortfolioV2() {
     : "$" + Math.round(inr / fx).toLocaleString("en-US");
   const signed = (inr) => (inr >= 0 ? "+" : "−") + base(Math.abs(inr));
 
+  if (pinHash && !unlocked) {
+    return (
+      <div className="pf" data-pf-theme={theme}><style>{PF2_CSS}</style>
+        <div className="wrap">
+          <div className="panel" style={{ maxWidth: 360, margin: "90px auto 0", padding: "30px 28px", textAlign: "center" }}>
+            <div style={{ fontSize: 30 }}>🔒</div>
+            <h2 style={{ fontFamily: "var(--ser)", fontWeight: 500, margin: "8px 0 4px" }}>Portfolio locked</h2>
+            <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 18 }}>Enter your PIN to view your holdings.</div>
+            <input type="password" value={pin} autoFocus inputMode="numeric" placeholder="••••" maxLength={8}
+              onChange={(e) => { setPin(e.target.value.replace(/\D/g, "")); setLockMsg(null); }}
+              onKeyDown={(e) => e.key === "Enter" && doUnlock()}
+              style={{ width: 170, textAlign: "center", letterSpacing: ".35em", fontSize: 18 }} />
+            <div style={{ marginTop: 14 }}><button className="btn primary" onClick={doUnlock} disabled={!pin}>Unlock</button></div>
+            {lockMsg && <div className="msg neg" style={{ padding: "12px 0 0" }}>{lockMsg}</div>}
+            <div style={{ color: "var(--faint)", fontSize: 11, marginTop: 18 }}>Forgot it? Clearing this site's data in your browser removes the lock.</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (!data?.summary) {
     return <div className="pf" data-pf-theme={theme}><style>{PF2_CSS}</style>
       <div className="wrap"><div className="loading">Loading your portfolio…</div></div></div>;
@@ -337,10 +402,29 @@ export default function PortfolioV2() {
             <div className="seg">
               {["INR", "USD"].map((x) => <button key={x} className={disp === x ? "on" : ""} onClick={() => setDisp(x)}>{x === "INR" ? "₹ INR" : "$ USD"}</button>)}
             </div>
+            {pinHash
+              ? <button className="icon" onClick={lockNow} title="Lock the portfolio now">🔒 Lock</button>
+              : <button className="icon" onClick={() => { setPinSetup((v) => !v); setLockMsg(null); setPin(""); setPin2(""); }} title="Set a PIN to lock this page">🔒 Set PIN</button>}
             <button className="icon" onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))} title="Toggle theme">◐</button>
             <Link className="icon" to="/profile" title="Research terminal">Research</Link>
           </div>
         </header>
+        {pinSetup && !pinHash && (
+          <section className="panel" style={{ marginBottom: 16 }}>
+            <form className="form" onSubmit={(e) => { e.preventDefault(); doSetup(); }}>
+              <div className="field"><label>New PIN (4–8 digits)</label>
+                <input type="password" value={pin} inputMode="numeric" maxLength={8} autoFocus
+                  onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} style={{ width: 140, letterSpacing: ".25em" }} /></div>
+              <div className="field"><label>Confirm PIN</label>
+                <input type="password" value={pin2} inputMode="numeric" maxLength={8}
+                  onChange={(e) => setPin2(e.target.value.replace(/\D/g, ""))} style={{ width: 140, letterSpacing: ".25em" }} /></div>
+              <button className="btn primary" type="submit">Enable lock</button>
+              <button className="btn" type="button" onClick={() => { setPinSetup(false); setPin(""); setPin2(""); setLockMsg(null); }}>Cancel</button>
+            </form>
+            {lockMsg && <div className="msg neg">{lockMsg}</div>}
+          </section>
+        )}
+        {lockMsg && !pinSetup && <div className="msg pos" style={{ padding: "0 0 12px" }}>{lockMsg}</div>}
 
         <section className="panel hero">
           <div>
@@ -553,7 +637,8 @@ export default function PortfolioV2() {
           )}
         </section>
 
-        <div className="foot">Snowball-inspired reskin · live data · descriptive reporting only — not investment advice.</div>
+        <div className="foot">Snowball-inspired reskin · live data · descriptive reporting only — not investment advice.
+          {pinHash && <> · <button className="del" style={{ fontSize: 11.5 }} onClick={removeLock}>remove PIN lock</button></>}</div>
       </div>
     </div>
   );
