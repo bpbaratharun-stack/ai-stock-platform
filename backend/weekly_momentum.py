@@ -127,6 +127,22 @@ def to_weekly(df: pd.DataFrame) -> pd.DataFrame:
     return wk.sort_values(["symbol", "week"])
 
 
+def week_is_over(period, last_session) -> bool:
+    """True when the trading week has FINISHED.
+
+    NOT "does it have 5 sessions". Indian markets close for holidays, so a fully
+    complete week can have 4 or fewer. Counting sessions made every holiday week
+    look partial, and --complete-weeks-only then silently screened the week
+    BEFORE it: w/e 2026-09-18 had 4 sessions (the 14th was a holiday), so the
+    screens kept publishing w/e 2026-09-11 even though the data was current.
+
+    A week is done once its Friday has passed, or once we hold that Friday's
+    session (a Friday holiday leaves the last session on Thursday).
+    """
+    friday = period.end_time.date()
+    return last_session >= friday or friday < pd.Timestamp.today().date()
+
+
 # --------------------------------------------------------------------------- #
 # Features
 # --------------------------------------------------------------------------- #
@@ -267,14 +283,15 @@ def run(cfg):
     snap = wk[wk["week"] == target]
     days = int(snap["days"].max())
 
-    if days < 5 and cfg.complete_weeks_only:
+    if (cfg.complete_weeks_only and len(weeks) > 1
+            and not week_is_over(target, snap["week_end"].max().date())):
         target = weeks.iloc[-2]
         snap = wk[wk["week"] == target]
         days = int(snap["days"].max())
         print(f"  (skipping partial week as requested)")
 
-    partial = days < 5
     wk_end = snap["week_end"].max().date()
+    partial = not week_is_over(target, wk_end)
     print(f"\nScreening week {target}  (ends {wk_end}, {days} trading days"
           f"{'  ** PARTIAL **' if partial else ''})")
     if partial:

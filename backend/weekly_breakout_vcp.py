@@ -59,7 +59,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from weekly_momentum import ETF_RE, load_results_map, near_results, to_weekly
+from weekly_momentum import ETF_RE, load_results_map, near_results, to_weekly, week_is_over
 
 HERE = Path(__file__).parent
 PANEL = HERE / "data" / "panel.parquet"
@@ -390,12 +390,13 @@ def run(cfg):
     target = weeks.iloc[-1]
     tsnap = wk[wk["week"] == target]
     days = int(tsnap["days"].max())
-    if days < 5 and cfg.complete_weeks_only and len(weeks) > 1:
+    if (cfg.complete_weeks_only and len(weeks) > 1
+            and not week_is_over(target, tsnap["week_end"].max().date())):
         target = weeks.iloc[-2]
         tsnap = wk[wk["week"] == target]
         days = int(tsnap["days"].max())
-    partial = days < 5
     wk_end = tsnap["week_end"].max().date()
+    partial = not week_is_over(target, wk_end)
 
     print(f"  {df['symbol'].nunique():,} symbols, weekly through {wk_end} "
           f"({days} trading days{'  ** PARTIAL **' if partial else ''})")
@@ -460,7 +461,7 @@ def main():
     p.add_argument("--min-vol-mult", type=float, default=1.5, help="Breakout volume vs 20w avg (default 1.5).")
     p.add_argument("--min-close-strength", type=float, default=0.6, help="Close position in weekly range, 0-1 (default 0.6).")
     p.add_argument("--max-ext-mult", type=float, default=1.25, help="Max close as multiple of base high (default 1.25).")
-    p.add_argument("--complete-weeks-only", action="store_true", help="Skip the latest week if it has < 5 trading days.")
+    p.add_argument("--complete-weeks-only", action="store_true", help="Skip the latest week unless it has finished (its Friday has passed). Holiday-shortened weeks still count as complete.")
     p.add_argument("--include-etfs", action="store_true", help="Do not exclude ETFs/index funds.")
     p.add_argument("--outdir", type=Path, default=HERE / "data", help="Output directory.")
     run(p.parse_args())
