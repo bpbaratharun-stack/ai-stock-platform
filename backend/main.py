@@ -2128,7 +2128,8 @@ class _GateCfg:
 
 def _weekly_panel():
     """Cached weekly-features frame for the recent window (reuses the scanner)."""
-    hit, v = CACHE.get("wkpanel", 3600)
+    key = f"wkpanel:{_panel_fingerprint()}"   # refreshing panel.parquet invalidates this
+    hit, v = CACHE.get(key, 3600)
     if hit:
         return v
     import weekly_momentum as wm
@@ -2140,7 +2141,7 @@ def _weekly_panel():
     df = df[~df["symbol"].str.contains(wm.ETF_RE, na=False)]
     wk = wm.add_features(wm.to_weekly(df))
     wk["week_end_str"] = wk["week_end"].dt.strftime("%Y-%m-%d")
-    CACHE.set("wkpanel", wk)
+    CACHE.set(key, wk)
     return wk
 
 
@@ -2150,8 +2151,12 @@ def top_performers(week: str = Query(default=None), limit: int = Query(default=1
     portfolio and the breakout screen, plus which momentum gates each one passed."""
     import weekly_momentum as wm
     wk = _weekly_panel()
-    info = wk.groupby("week_end_str", observed=True)["days"].max()
-    complete = sorted([d for d, mx in info.items() if mx >= 5], reverse=True)
+    # A finished week is one whose Friday has passed — NOT one with 5 sessions.
+    # Holidays make complete weeks shorter (w/e 2026-09-18 had 4), and the old
+    # `mx >= 5` test dropped them, pinning this tab to the week before.
+    info = wk.groupby("week", observed=True).agg(week_end=("week_end", "max"), days=("days", "max"))
+    complete = sorted((r["week_end"].strftime("%Y-%m-%d") for per, r in info.iterrows()
+                       if wm.week_is_over(per, r["week_end"].date())), reverse=True)
     if not complete:
         raise HTTPException(404, "No complete weeks in the panel.")
     chosen = week if (week and week in complete) else complete[0]
