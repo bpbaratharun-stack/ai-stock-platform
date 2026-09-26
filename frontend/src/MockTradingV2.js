@@ -98,7 +98,7 @@ export default function MockTradingV2({ variant = "checklist" }) {
         <header className="top">
           <div className="brand">
             <h1>Portfolio</h1>
-            <nav className="nav"><Link to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link className={variant === "checklist" ? "on" : ""} to="/v2/mock">Mock trading</Link><Link className={isTurn ? "on" : ""} to="/v2/mock2">Mock trading 2</Link><Link to="/v2/sectors">Sectors</Link></nav>
+            <nav className="nav"><Link to="/">Overview</Link><Link to="/v2/booked">Booking</Link><Link className={variant === "checklist" ? "on" : ""} to="/v2/mock">Mock trading</Link><Link className={isTurn ? "on" : ""} to="/v2/mock2">Mock trading 2</Link><Link to="/v2/sectors">Sectors</Link><Link to="/v2/common">Common picks</Link></nav>
           </div>
           <div className="controls">
             <button className="icon" onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))} title="Toggle theme">◐</button>

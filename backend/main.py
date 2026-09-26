@@ -1782,6 +1782,124 @@ def sectors(news: bool = Query(default=True)):
     return result
 
 
+# ============================================================ SCREEN OVERLAP
+# Where the three independent screens agree. Each one on its own showed no edge
+# in backtesting, so agreement is NOT evidence of one — it is a shortlist of
+# names that several different rules happened to surface in the same week.
+SCREEN_LABELS = {
+    "mock1":  "Mock trading (checklist)",
+    "mock2":  "Mock trading 2 (EMA turnaround)",
+    "weekly": "Weekly breakouts",
+}
+
+
+@app.get("/confluence", operation_id="screen_overlap")
+def confluence(top: int = Query(default=30, ge=5, le=100),
+               min_screens: int = Query(default=2, ge=2, le=3)):
+    """Stocks appearing in at least `min_screens` of the three screens: the Mock
+    trading checklist (its top `top` setups, matching that tab's default view),
+    the Mock trading 2 EMA-turnaround signals, and the latest Weekly breakouts.
+    Descriptive — overlap is not a proven edge; every one of these screens tested
+    flat-to-negative against its own universe."""
+    # call the screens with every parameter explicit: these are FastAPI handlers,
+    # so omitting one would pass a Query object rather than its default value.
+    ck = strategy_scan(top=top, min_rr=2.0, min_turnover_cr=2.0, min_price=30.0,
+                       variant="checklist", lookback=2, min_react=3.0)
+    ta = strategy_scan(top=100, min_rr=2.0, min_turnover_cr=2.0, min_price=30.0,
+                       variant="turnaround", lookback=2, min_react=3.0)
+    wb = weekly_breakouts(week=None, limit=300)
+
+    def key(s):
+        return str(s).strip().upper().replace(".NS", "").replace(".BO", "")
+
+    hits: dict = {}
+
+    def note(sym, screen, payload):
+        r = hits.setdefault(key(sym), {"screens": [], "mock1": None, "mock2": None, "weekly": None})
+        if screen not in r["screens"]:
+            r["screens"].append(screen)
+        r[screen] = payload
+
+    for c in ck.get("candidates", []):
+        note(c["symbol"], "mock1", {
+            "score": c.get("score"), "close": c.get("close"), "rr": c.get("rr"),
+            "stop": c.get("stop"), "target_r4": c.get("target_r4"),
+            "room_to_r4_pct": c.get("room_to_r4_pct"), "sector": c.get("sector"),
+            "checklist": c.get("checklist"),
+        })
+    for c in ta.get("candidates", []):
+        note(c["symbol"], "mock2", {
+            "trigger": c.get("trigger"), "close": c.get("close"),
+            "score": c.get("score"), "sector": c.get("sector"),
+        })
+    for b in wb.get("breakouts", []):
+        note(b["symbol"], "weekly", {
+            "score": b.get("score"), "week_return_pct": b.get("week_return_pct"),
+            "since_pct": b.get("since_pct"), "state": b.get("state"),
+            "vol_surge": b.get("vol_surge"), "breakout_close": b.get("breakout_close"),
+            "current_price": b.get("current_price"),
+        })
+
+    try:
+        port = {key(p["symbol"]) for p in load_holdings()["positions"]}
+    except HTTPException:
+        port = set()
+
+    rows = []
+    for sym, r in hits.items():
+        if len(r["screens"]) < min_screens:
+            continue
+        m1, m2, wbk = r["mock1"], r["mock2"], r["weekly"]
+        rows.append({
+            "symbol": sym,
+            "screens": sorted(r["screens"], key=lambda s: ("mock1", "mock2", "weekly").index(s)),
+            "n_screens": len(r["screens"]),
+            "in_portfolio": sym in port,
+            "sector": (m1 or {}).get("sector") or (m2 or {}).get("sector"),
+            # price: prefer the live mark the weekly screen already fetched
+            "close": (wbk or {}).get("current_price") or (m1 or {}).get("close") or (m2 or {}).get("close"),
+            "setup_score": (m1 or {}).get("score"),
+            "rr": (m1 or {}).get("rr"),
+            "stop": (m1 or {}).get("stop"),
+            "target_r4": (m1 or {}).get("target_r4"),
+            "room_to_r4_pct": (m1 or {}).get("room_to_r4_pct"),
+            "checklist": (m1 or {}).get("checklist"),
+            "trigger": (m2 or {}).get("trigger"),
+            "breakout_score": (wbk or {}).get("score"),
+            "week_return_pct": (wbk or {}).get("week_return_pct"),
+            "since_pct": (wbk or {}).get("since_pct"),
+            "state": (wbk or {}).get("state"),
+            "vol_surge": (wbk or {}).get("vol_surge"),
+        })
+    # most agreement first, then the strongest checklist setup
+    rows.sort(key=lambda r: (-r["n_screens"], -(r["setup_score"] or r["breakout_score"] or 0)))
+
+    return {
+        "as_of": ck.get("as_of"),
+        "week_ending": wb.get("week_ending"),
+        "min_screens": min_screens,
+        "labels": SCREEN_LABELS,
+        "sources": {
+            "mock1": {"label": SCREEN_LABELS["mock1"], "n": len(ck.get("candidates", [])),
+                      "note": f"top {top} setups by score"},
+            "mock2": {"label": SCREEN_LABELS["mock2"], "n": len(ta.get("candidates", [])),
+                      "note": "all signals firing today"},
+            "weekly": {"label": SCREEN_LABELS["weekly"], "n": len(wb.get("breakouts", [])),
+                       "note": f"week ending {wb.get('week_ending')}"},
+        },
+        "summary": {
+            "n_rows": len(rows),
+            "n_all_three": sum(1 for r in rows if r["n_screens"] == 3),
+            "n_exactly_two": sum(1 for r in rows if r["n_screens"] == 2),
+            "n_in_portfolio": sum(1 for r in rows if r["in_portfolio"]),
+        },
+        "rows": rows,
+        "note": ("Overlap only. Each of these screens was backtested and none beat its own "
+                 "universe, so agreement between them is a shortlist to look at, not a signal."),
+        "disclaimer": DISCLAIMER,
+    }
+
+
 def _reduce_holding(sym: str, exch: str, qty: float):
     """Reduce a holding's quantity after a booked sell; remove it if fully closed."""
     try:

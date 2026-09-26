@@ -160,7 +160,7 @@ export default function SectorsV2() {
             <nav className="nav">
               <Link to="/">Overview</Link><Link to="/v2/booked">Booking</Link>
               <Link to="/v2/mock">Mock trading</Link><Link to="/v2/mock2">Mock trading 2</Link>
-              <Link className="on" to="/v2/sectors">Sectors</Link>
+              <Link className="on" to="/v2/sectors">Sectors</Link><Link to="/v2/common">Common picks</Link>
             </nav>
           </div>
           <div className="controls">
