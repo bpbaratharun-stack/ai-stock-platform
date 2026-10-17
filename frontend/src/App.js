@@ -16,6 +16,7 @@ import BookingV2 from "./BookingV2";
 import MockTradingV2 from "./MockTradingV2";
 import SectorsV2 from "./SectorsV2";
 import ConfluenceV2 from "./ConfluenceV2";
+import ResultsV2 from "./ResultsV2";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -889,6 +890,7 @@ function Shell() {
   if (loc.pathname === "/v2/mock2") return <MockTradingV2 variant="turnaround" />;
   if (loc.pathname === "/v2/sectors") return <SectorsV2 />;
   if (loc.pathname === "/v2/common") return <ConfluenceV2 />;
+  if (loc.pathname === "/v2/results") return <ResultsV2 />;
   return (
     <div style={{ background: "#020617", minHeight: "100vh", color: "#f8fafc", padding: 24, fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box" }}>
       <div style={{ marginBottom: 20 }}>

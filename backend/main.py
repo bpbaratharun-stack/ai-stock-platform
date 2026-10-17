@@ -1900,6 +1900,182 @@ def confluence(top: int = Query(default=30, ge=5, le=100),
     }
 
 
+# ====================================================== UPCOMING RESULTS DATES
+# NSE's board-meetings API only returns FUTURE meetings when queried index-wide
+# with a forward window — a per-symbol query returns history only. So one call
+# fetches every scheduled meeting and we filter to the book.
+TTL_UPCOMING = 21600        # 6h: scheduled dates move rarely
+TTL_REACT = 86400           # per-symbol historical reaction stats: 24h
+
+
+def _fetch_upcoming_meetings(days: int) -> list[dict]:
+    """[{symbol, date, purpose, name, industry}] of scheduled FINANCIAL-RESULTS
+    board meetings in the next `days`, for the whole exchange."""
+    import json as _json
+    import urllib.parse, urllib.request
+    import nse_results_dates as nrd
+    today = pd.Timestamp.now().date()
+    qs = urllib.parse.urlencode({
+        "index": "equities",
+        "from_date": today.strftime("%d-%m-%Y"),
+        "to_date": (today + pd.Timedelta(days=days)).strftime("%d-%m-%Y"),
+    })
+    op = nrd._opener()                       # NSE 403s without cookies from the homepage
+    raw = op.open(urllib.request.Request(nrd.API + "?" + qs), timeout=30).read().decode("utf-8", "replace")
+    rows = _json.loads(raw)
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        blob = f"{r.get('bm_purpose','')} {r.get('bm_desc','')}".lower()
+        if "financial result" not in blob:
+            continue                          # ignore fund-raising / other board business
+        iso = nrd._parse_date(r.get("bm_date", ""))
+        sym = str(r.get("bm_symbol") or "").strip().upper()
+        if not iso or not sym or iso < today.isoformat():
+            continue
+        out.append({"symbol": sym, "date": iso, "purpose": (r.get("bm_purpose") or "").strip(),
+                    "name": (r.get("sm_name") or "").strip(),
+                    "industry": (r.get("sm_indusrty") or "").strip(" -")})
+    return out
+
+
+def _results_reaction_stats(symbols: list[str]) -> dict:
+    """{symbol: {n, median_abs_pct, up_rate_pct, last_date}} — how this stock has
+    historically moved on results day, from the cached past dates + the price
+    panel. Context for what is at stake, not a forecast: across the whole
+    universe the results reaction is UP only ~44% of the time (earnings_drift.py)."""
+    from weekly_momentum import load_results_map
+    want = sorted({s.upper() for s in symbols})
+    missing = [s for s in want if not CACHE.get(f"react:{s}", TTL_REACT)[0]]
+    if missing:
+        rmap = load_results_map()
+        try:
+            panel = pd.read_parquet(os.path.join(os.path.dirname(SCORES_PATH), "panel.parquet"),
+                                    columns=["date", "symbol", "close"])
+        except Exception as exc:
+            log.warning("reaction stats: panel unavailable: %s", exc)
+            panel = None
+        for s in missing:
+            stat = {"n": 0, "median_abs_pct": None, "up_rate_pct": None, "last_date": None}
+            dates = rmap.get(s) or []
+            if dates:
+                stat["last_date"] = str(max(dates))
+            if panel is not None and dates:
+                g = panel[panel["symbol"] == f"{s}.NS"].sort_values("date")
+                if len(g) > 10:
+                    d = g["date"].dt.date.to_numpy()
+                    cl = g["close"].to_numpy()
+                    moves = []
+                    for D in dates:
+                        b = np.searchsorted(d, D, side="left") - 1
+                        a = np.searchsorted(d, D, side="right")
+                        if b < 0 or a >= len(d):
+                            continue
+                        if (d[a] - D).days > 7 or (D - d[b]).days > 7:
+                            continue          # same calendar guard as earnings_drift.py
+                        moves.append((cl[a] / cl[b] - 1) * 100)
+                    if moves:
+                        arr = np.array(moves)
+                        stat.update(n=len(arr),
+                                    median_abs_pct=round(float(np.median(np.abs(arr))), 1),
+                                    up_rate_pct=round(float((arr > 0).mean() * 100)))
+            CACHE.set(f"react:{s}", stat)
+    return {s: CACHE.get(f"react:{s}", TTL_REACT)[1] for s in want}
+
+
+@app.get("/upcoming-results", operation_id="upcoming_results")
+def upcoming_results(days: int = Query(default=60, ge=7, le=120)):
+    """Scheduled quarterly-results dates for the stocks you hold, soonest first,
+    with the position at stake and how that stock has historically moved on
+    results day. NSE-listed holdings only (US stocks and mutual funds have no
+    NSE board-meeting filing). Descriptive — not advice."""
+    hit, cached = CACHE.get(f"upcoming:{days}", TTL_UPCOMING)
+    if not hit:
+        try:
+            cached = _fetch_upcoming_meetings(days)
+        except Exception as exc:
+            raise HTTPException(502, f"Could not reach NSE's board-meeting feed: {exc}")
+        CACHE.set(f"upcoming:{days}", cached)
+    meetings = cached
+
+    # earliest scheduled results date per symbol
+    by_sym: dict = {}
+    for m in meetings:
+        cur = by_sym.get(m["symbol"])
+        if cur is None or m["date"] < cur["date"]:
+            by_sym[m["symbol"]] = m
+
+    try:
+        positions = load_holdings()["positions"]
+    except HTTPException:
+        positions = []
+    nse = [p for p in positions if str(p.get("exchange", "NSE")).upper() == "NSE"]
+    if not nse:
+        return {"as_of": str(pd.Timestamp.now().date()), "window_days": days, "rows": [],
+                "awaiting": [], "summary": {"n_holdings": 0, "n_scheduled": 0},
+                "disclaimer": DISCLAIMER}
+
+    rate = float(fetch_usdinr()["rate"])
+    prices = fetch_last_prices([p["symbol"] for p in nse])
+    disp = {str(p["symbol"]).upper().replace(".NS", "").replace(".BO", ""): p for p in nse}
+    stats = _results_reaction_stats(list(disp))
+    total = 0.0
+    vals = {}
+    for s, p in disp.items():
+        px = prices.get(str(p["symbol"]).upper())
+        last = px["last"] if px else float(p.get("avg_price", 0))
+        v = float(p.get("qty", 0)) * last
+        vals[s] = {"value_inr": v, "last": last, "avg": float(p.get("avg_price", 0))}
+        total += v
+    total = total or 1.0
+
+    today = pd.Timestamp.now().date()
+    rows, awaiting = [], []
+    for s, p in disp.items():
+        st = stats.get(s) or {}
+        v = vals[s]
+        base = {
+            "symbol": s,
+            "qty": round(float(p.get("qty", 0)), 4),
+            "value_inr": round(v["value_inr"], 2),
+            "weight_pct": round(v["value_inr"] / total * 100, 1),
+            "pnl_pct": round((v["last"] / v["avg"] - 1) * 100, 2) if v["avg"] else None,
+            "hist_n": st.get("n"), "hist_median_abs_pct": st.get("median_abs_pct"),
+            "hist_up_rate_pct": st.get("up_rate_pct"), "last_results_date": st.get("last_date"),
+        }
+        m = by_sym.get(s)
+        if m:
+            rows.append({**base, "results_date": m["date"],
+                         "days_away": (pd.Timestamp(m["date"]).date() - today).days,
+                         "company": m["name"] or None, "industry": m["industry"] or None,
+                         "purpose": m["purpose"]})
+        else:
+            awaiting.append(base)
+
+    rows.sort(key=lambda r: (r["results_date"], -r["value_inr"]))
+    awaiting.sort(key=lambda r: -r["value_inr"])
+    week = [r for r in rows if r["days_away"] <= 7]
+    return {
+        "as_of": str(today),
+        "window_days": days,
+        "rows": rows,
+        "awaiting": awaiting,
+        "summary": {
+            "n_holdings": len(disp),
+            "n_scheduled": len(rows),
+            "n_awaiting": len(awaiting),
+            "n_next_7d": len(week),
+            "value_reporting_inr": round(sum(r["value_inr"] for r in rows), 2),
+            "value_next_7d_inr": round(sum(r["value_inr"] for r in week), 2),
+            "pct_of_book_reporting": round(sum(r["value_inr"] for r in rows) / total * 100, 1),
+        },
+        "note": ("Dates are the company's own board-meeting intimation to NSE and can be "
+                 "moved. 'Typical move' is the median absolute 2-session move around this "
+                 "stock's past results, from your own price history — a gauge of what is at "
+                 "stake, not a prediction of direction."),
+        "disclaimer": DISCLAIMER,
+    }
+
+
 def _reduce_holding(sym: str, exch: str, qty: float):
     """Reduce a holding's quantity after a booked sell; remove it if fully closed."""
     try:
