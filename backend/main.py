@@ -2076,6 +2076,61 @@ def upcoming_results(days: int = Query(default=60, ge=7, le=120)):
     }
 
 
+# ========================================================= DOWN-MARKET SCREEN
+TTL_RESILIENT = 3600
+
+
+@app.get("/resilient", operation_id="resilient_stocks")
+def resilient(weeks: int = Query(default=4, ge=1, le=26),
+              top: int = Query(default=30, ge=5, le=100),
+              min_turnover_cr: float = Query(default=2.0, ge=0),
+              min_price: float = Query(default=30.0, ge=0)):
+    """Stocks holding up best while the market falls — the question a breakout
+    screen cannot answer in a selloff. "The market" is the liquid universe's own
+    MEDIAN stock, not a cap-weighted index (in Oct 2026 the Nifty 50 was flat
+    while the median stock fell ~7%). `down_capture` < 1 means it fell less than
+    the market on the market's down days; < 0 means it rose while the market fell.
+    Descriptive and NOT yet backtested for forward returns."""
+    key = f"resilient:{weeks}:{min_turnover_cr}:{min_price}"
+    hit, cached = CACHE.get(key, TTL_RESILIENT)
+    if not hit:
+        cached = _scan_disk_load(key)
+        hit = cached is not None
+        if hit:
+            CACHE.set(key, cached)
+    if not hit:
+        import resilience_scan as rs
+        try:
+            res = rs.build(rs.Cfg(weeks=weeks, min_price=min_price, min_turnover_cr=min_turnover_cr))
+        except FileNotFoundError:
+            raise HTTPException(503, "panel.parquet not found — run ingest_bhavcopy.py first.")
+        if res.empty:
+            raise HTTPException(404, "No qualifying stocks for this window.")
+        m = res.attrs
+        rows = []
+        for sym, r in res.head(100).iterrows():
+            def g(k, nd=2):
+                v = r.get(k)
+                return round(float(v), nd) if pd.notna(v) else None
+            rows.append({"symbol": sym, "close": g("close"), "ret_pct": g("ret_pct"),
+                         "rel_pct": g("rel_pct"), "down_capture": g("down_capture"),
+                         "beat_down_pct": g("beat_down_pct", 0), "max_dd_pct": g("max_dd_pct", 1),
+                         "from_52w_high": g("from_52w_high", 1), "adtv_cr": g("adtv_cr", 1)})
+        cached = {"start": m["start"], "end": m["end"], "weeks": weeks,
+                  "n_sessions": m["n_sessions"], "n_down_days": m["n_down_days"],
+                  "market_ret_pct": m["market_ret_pct"], "n_universe": m["n_universe"],
+                  "rows": rows,
+                  "note": ("'The market' is the median liquid stock, not an index. down_capture "
+                           "below 1 means it fell less than the market on down days; below 0 means "
+                           "it rose while the market fell. Ranked by return relative to that median."),
+                  "disclaimer": DISCLAIMER}
+        CACHE.set(key, cached)
+        _scan_disk_save(key, cached)
+    out = dict(cached)
+    out["rows"] = cached["rows"][:top]
+    return out
+
+
 def _reduce_holding(sym: str, exch: str, qty: float):
     """Reduce a holding's quantity after a booked sell; remove it if fully closed."""
     try:
