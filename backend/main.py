@@ -300,6 +300,37 @@ def fetch_mf_navs(codes: list[str]) -> dict:
     return out
 
 
+def _panel_recent_closes() -> dict:
+    """{symbol: {last, prev, spark, date}} from our own NSE bhavcopy panel.
+
+    Yahoo is frequently a session BEHIND on NSE names — on 2026-11-07, 56 of 57
+    NSE holdings had no 06-Nov close on Yahoo while the bhavcopy did. The panel
+    is the official exchange EOD, so it is the better source once it is in.
+    Keyed on the panel fingerprint, so an ingest refreshes it immediately."""
+    key = f"panelpx:{_panel_fingerprint()}"
+    hit, v = CACHE.get(key, 86400)
+    if hit:
+        return v
+    out: dict = {}
+    try:
+        path = os.path.join(os.path.dirname(SCORES_PATH), "panel.parquet")
+        df = pd.read_parquet(path, columns=["date", "symbol", "close"])
+        df = df.sort_values(["symbol", "date"]).groupby("symbol", observed=True).tail(22)
+        for sym, g in df.groupby("symbol", observed=True):
+            cl = [float(x) for x in g["close"].tolist()]
+            if not cl:
+                continue
+            out[str(sym).upper()] = {
+                "last": cl[-1], "prev": cl[-2] if len(cl) > 1 else cl[-1],
+                "spark": [round(x, 2) for x in cl],
+                "date": str(pd.Timestamp(g["date"].iloc[-1]).date()),
+            }
+    except Exception as exc:
+        log.warning("panel price fallback unavailable: %s", exc)
+    CACHE.set(key, out)
+    return out
+
+
 def fetch_last_prices(symbols: list[str]) -> dict:
     """{symbol: {"last", "prev", "spark"}} from one cached batch download.
     'spark' is up to ~22 recent daily closes for a per-holding sparkline.
@@ -326,13 +357,30 @@ def fetch_last_prices(symbols: list[str]) -> dict:
                     last = float(closes.iloc[-1])
                     prev = float(closes.iloc[-2]) if len(closes) >= 2 else last
                     spark = [round(float(x), 2) for x in closes.iloc[-22:].tolist()]
-                    out[s] = {"last": last, "prev": prev, "spark": spark}
+                    out[s] = {"last": last, "prev": prev, "spark": spark,
+                              "date": str(pd.Timestamp(closes.index[-1]).date()),
+                              "source": "yfinance"}
                 except Exception:
                     out[s] = None
         except Exception as exc:
             log.warning("Price batch fetch failed: %s", exc)
             for s in yf_syms:
                 out.setdefault(s, None)
+    # Our bhavcopy beats Yahoo on NSE names whenever it is further ahead. During
+    # market hours Yahoo is live and the panel is yesterday's EOD, so compare
+    # dates rather than always preferring one — newest wins.
+    nse = [s for s in syms if s.endswith(".NS")]
+    if nse:
+        panel_px = _panel_recent_closes()
+        for s in nse:
+            pr = panel_px.get(s)
+            if not pr:
+                continue
+            cur = out.get(s)
+            if cur is None or pr["date"] > (cur.get("date") or ""):
+                out[s] = {"last": pr["last"], "prev": pr["prev"], "spark": pr["spark"],
+                          "date": pr["date"], "source": "bhavcopy"}
+
     CACHE.set(key, out)
     return out
 
@@ -805,6 +853,8 @@ def portfolio():
             "day_change_pct": round((last / prev - 1) * 100, 2) if prev else 0.0,
             "day_change_inr": round(day_inr, 2),
             "spark": spark,
+            "price_date": (px or {}).get("date"),
+            "price_source": (px or {}).get("source"),
             "stale": px is None,
         })
 

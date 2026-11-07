@@ -345,6 +345,10 @@ export default function PortfolioV2() {
   const sectors = (alloc?.by_sector ?? []).map((x, i) => [x.name, x.pct, SECTOR_COLORS[i % SECTOR_COLORS.length]]);
   const tmData = (data.holdings ?? []).slice(0, 24).map((h) => ({ value: h.value_inr, sym: h.symbol, day: h.day_change_pct }));
   const alertBy = {}; (alerts?.below ?? []).forEach((a) => { alertBy[a.symbol] = a; });
+  // the freshest price date in the book — rows older than this are flagged, so a
+  // lagging feed is visible instead of silently showing an out-of-date LTP
+  const freshest = (data.holdings ?? []).reduce((m, h) => (h.price_date && h.price_date > m ? h.price_date : m), "");
+  const dayTag = (iso) => { const [, m, d] = iso.split("-"); return `${+d}/${+m}`; };
 
   // today's biggest rupee movers among current holdings
   const moving = (data.holdings ?? []).filter((h) => !h.stale && h.day_change_inr);
@@ -621,7 +625,16 @@ export default function PortfolioV2() {
                       <td className="l"><div className="stk"><div className="s" title={h.name || h.symbol}>{primaryLabel}{h.is_fund && <span className="badge fund">FUND</span>}{al?.confirmed && <span className={`dma${al.fresh ? " f" : ""}`}>▼50D</span>}</div><div className="i">{subLabel}</div></div></td>
                       <td>{h.qty}</td>
                       <td style={{ color: "var(--muted)" }}>{cur}{h.avg_price}</td>
-                      <td title={h.stale ? "no live price — showing cost basis" : ""}>{cur}{h.last_price}{h.stale && <span style={{ color: "var(--faint)", fontSize: 10 }}> ·stale</span>}</td>
+                      <td title={h.stale
+                        ? "No price available — showing your cost basis, so P&L reads flat."
+                        : `${cur}${h.last_price} as of ${h.price_date || "unknown"}${h.price_source ? ` · from ${h.price_source === "bhavcopy" ? "NSE bhavcopy" : h.price_source}` : ""}`}>
+                        {cur}{h.last_price}
+                        {h.stale
+                          ? <span className="dma" style={{ marginLeft: 5 }}>no price</span>
+                          : (h.price_date && freshest && h.price_date < freshest
+                              ? <span className="dma f" style={{ marginLeft: 5 }} title={`This feed has not updated since ${h.price_date}; the rest of the book is at ${freshest}.`}>{dayTag(h.price_date)}</span>
+                              : null)}
+                      </td>
                       <td>{base(h.value_inr)}</td>
                       <td><div className="wcell"><div className="wbar"><span style={{ width: `${Math.min(wt / (c?.largest?.pct || 10) * 100, 100)}%` }} /></div>{wt.toFixed(1)}%</div></td>
                       <td className={h.day_change_pct >= 0 ? "pos" : "neg"}>{h.day_change_pct >= 0 ? "+" : ""}{h.day_change_pct}%</td>
