@@ -2477,6 +2477,7 @@ def vcp_breakouts(week: str = Query(default=None),
                 "vol_mult": _f(r.get("vol_mult")),
                 "close_strength": _f(r.get("close_strength")),
                 "tr_contraction": _f(r.get("tr_contraction")),
+                "true_vcp": (bool(r.get("true_vcp")) if pd.notna(r.get("true_vcp")) else None),
                 "pullbacks": (str(r.get("pullbacks")) if pd.notna(r.get("pullbacks")) else None),  # e.g. "12->6"
                 "final_pullback_pct": _f(r.get("final_pullback_pct")),
                 "adtv": _f(r.get("adtv_cr")),

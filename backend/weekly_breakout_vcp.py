@@ -65,6 +65,11 @@ HERE = Path(__file__).parent
 PANEL = HERE / "data" / "panel.parquet"
 
 RS_CR = 1e7            # 1 crore in rupees
+# The strict pattern test. Enforced only with --strict; otherwise it is still
+# MEASURED and reported per row as true_vcp, so a loose base is visible rather
+# than silently mixed in with genuine contractions.
+STRICT_NEAR_FRAC = 0.90
+STRICT_TOUCHES = 3
 HORIZON_W = 12         # holding horizon in weeks
 
 
@@ -179,16 +184,20 @@ def scan_symbol(arr, cfg, results_dates=None):
         if touches < cfg.min_ceiling_touches:                # flat top, not a V
             continue
 
-        # GENUINE VCP: successive pullbacks each SHALLOWER than the last, ending
-        # in a tight final contraction. A single "range fell" inequality is not
-        # a VCP — it let straight V-runs and even EXPANDING bases through.
+        # Pattern quality: successive pullbacks each SHALLOWER than the last,
+        # ending in a tight final contraction, with the base genuinely flat-
+        # topped. Always MEASURED; only ENFORCED under --strict. The loose test
+        # alone (one "range fell" inequality) lets straight V-runs and even
+        # EXPANDING bases through, so the verdict rides along on every row.
         pulls = _pullbacks(cl[t - L:t])
-        if len(pulls) < cfg.min_pullbacks:
+        true_vcp = bool(
+            len(pulls) >= cfg.min_pullbacks
+            and all(pulls[i] > pulls[i + 1] for i in range(len(pulls) - 1))
+            and pulls and pulls[-1] <= cfg.max_final_pullback
+            and int((win_hi >= STRICT_NEAR_FRAC * bh).sum()) >= STRICT_TOUCHES
+        )
+        if cfg.strict and not true_vcp:
             continue
-        if not all(pulls[i] > pulls[i + 1] for i in range(len(pulls) - 1)):
-            continue                                          # not contracting
-        if pulls[-1] > cfg.max_final_pullback:
-            continue                                          # final leg too loose
 
         # trigger (on this week's close)
         va = volavg20[t]
@@ -209,8 +218,9 @@ def scan_symbol(arr, cfg, results_dates=None):
             "vol_mult": round(float(vol[t] / va), 2),
             "close_strength": round(float(cs[t]), 2),
             "ceiling_touches": touches,
+            "true_vcp": true_vcp,                                # passes the strict test?
             "pullbacks": "->".join(f"{p:.0f}" for p in pulls),   # e.g. 18->9->4
-            "final_pullback_pct": round(float(pulls[-1]), 1),
+            "final_pullback_pct": round(float(pulls[-1]), 1) if pulls else None,
             "tr_contraction": round(float(tr_last4 / tr_first4), 2),
             "adtv_cr": round(float(arr["med_turnover"][t] / RS_CR), 2),
             "near_results": nr,
@@ -426,7 +436,7 @@ def run(cfg):
     print(f"-> {out_path}")
     if not this_week.empty:
         show = this_week[["symbol", "close", "base_high", "ext_above_pivot_pct",
-                          "base_depth_pct", "pullbacks", "final_pullback_pct",
+                          "true_vcp", "pullbacks", "final_pullback_pct",
                           "vol_mult", "close_strength", "adtv_cr", "near_results"]]
         print(show.to_string(index=False))
 
@@ -453,9 +463,12 @@ def main():
     p.add_argument("--base-len", type=int, default=20, help="Base lookback window in weeks, 8-40 per spec "
                    "(default 20: 40 clears too rarely to be useful; the no-edge verdict holds across the range).")
     p.add_argument("--max-base-depth", type=float, default=0.35, help="Max base depth as fraction (default 0.35).")
-    p.add_argument("--near-high-frac", type=float, default=0.90, help="'Near the ceiling' = high >= this x base high (default 0.90; "
-                   "0.75 let every base count ~all its weeks as 'touches').")
-    p.add_argument("--min-ceiling-touches", type=int, default=3, help="Min base weeks near the ceiling (default 3).")
+    p.add_argument("--strict", action="store_true",
+                   help="Only publish genuine VCPs (successive shallower pullbacks, tight final "
+                        "leg, flat top). Off by default: the strict gates emptied the screen in "
+                        "the Oct-2026 selloff, so every row now carries true_vcp instead.")
+    p.add_argument("--near-high-frac", type=float, default=0.75, help="'Near the ceiling' = high >= this x base high (default 0.75).")
+    p.add_argument("--min-ceiling-touches", type=int, default=2, help="Min base weeks near the ceiling (default 2).")
     p.add_argument("--min-pullbacks", type=int, default=2, help="Min successive pullbacks (>=3%% deep) in the base (default 2).")
     p.add_argument("--max-final-pullback", type=float, default=10.0, help="Max depth %% of the LAST pullback before breakout (default 10).")
     p.add_argument("--min-vol-mult", type=float, default=1.5, help="Breakout volume vs 20w avg (default 1.5).")

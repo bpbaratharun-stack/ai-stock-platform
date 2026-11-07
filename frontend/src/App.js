@@ -674,6 +674,7 @@ function VCPBreakoutsView() {
     { key: "base_high", label: "PIVOT ₹", numeric: true },
     { key: "ext_above_pivot_pct", label: "EXT %", numeric: true },
     { key: "base_depth_pct", label: "DEPTH %", numeric: true },
+    { key: "true_vcp", label: "TRUE VCP", numeric: false },
     { key: "pullbacks", label: "PULLBACKS %", numeric: false },
     { key: "vol_mult", label: "VOL ×", numeric: true },
     { key: "close_strength", label: "CLOSE STR", numeric: true },
@@ -737,6 +738,13 @@ function VCPBreakoutsView() {
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="base high / breakout pivot">{num(b.base_high)}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="close vs pivot; >25% is rejected">{num(b.ext_above_pivot_pct, "%")}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="base depth; ≤35% required">{num(b.base_depth_pct, "%")}</td>
+                  <td style={{ padding: "10px", textAlign: "left" }} title={b.true_vcp
+                    ? "Textbook VCP: each pullback shallower than the last, tight final leg, flat-topped base."
+                    : "Breakout from a base, but NOT a textbook VCP — the pullbacks do not contract (see the next column). The screen lists it; judge the base yourself."}>
+                    {b.true_vcp == null ? <span style={{ color: "#475569" }}>?</span>
+                      : b.true_vcp ? <span style={{ color: "#00e396", fontWeight: 800 }}>✓ VCP</span>
+                      : <span style={{ color: "#f59e0b", fontWeight: 700 }}>loose base</span>}
+                  </td>
                   <td style={{ padding: "10px", textAlign: "left", color: "#2dd4bf", fontFamily: "JetBrains Mono", fontWeight: 700 }} title="successive pullback depths inside the base, oldest→newest; each must be shallower than the last (the VCP hallmark) and the final one ≤10%">{b.pullbacks ?? "—"}{b.final_pullback_pct != null ? <span style={{ color: "#64748b", fontWeight: 400 }}> · final {b.final_pullback_pct}%</span> : null}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: b.vol_mult >= 20 ? "#ff4d4d" : "#f59e0b" }} title="breakout volume vs 20w avg">{num(b.vol_mult, "×")}{b.vol_mult >= 20 ? " ⚠" : ""}</td>
                   <td style={{ padding: "10px", textAlign: "right", color: "#94a3b8" }} title="close position in weekly range; ≥0.6 required">{num(b.close_strength)}</td>
@@ -757,7 +765,7 @@ function VCPBreakoutsView() {
         </div>
       )}
       <div style={{ fontSize: 10, color: "#475569", fontFamily: "JetBrains Mono", marginTop: 12, lineHeight: 1.6 }}>
-        <b style={{ color: "#64748b" }}>PIVOT</b> = base high (breakout level). <b style={{ color: "#64748b" }}>EXT %</b> = close above pivot (entries &gt;25% rejected). <b style={{ color: "#64748b" }}>DEPTH %</b> = base depth (≤35%). <b style={{ color: "#64748b" }}>TR CONTR</b> &lt; 1 confirms volatility contraction (VCP). <b style={{ color: "#f59e0b" }}>NEAR EARN</b> = breakout within ±1 wk of a quarterly-results date (⚡ = likely earnings-driven, not a clean technical breakout; ? = no earnings data). Gates: liquid ≥ ₹2 cr/wk, price ≥ ₹30, listed ≥ 60 wk, close &gt; rising 30-wk SMA, volume ≥ 1.5× 20-wk avg, close in top 40% of range. Base window 20 wk (--base-len, spec range 8–40).
+        <b style={{ color: "#64748b" }}>PIVOT</b> = base high (breakout level). <b style={{ color: "#64748b" }}>EXT %</b> = close above pivot (entries &gt;25% rejected). <b style={{ color: "#64748b" }}>DEPTH %</b> = base depth (≤35%). <b style={{ color: "#00e396" }}>TRUE VCP</b> = passes the strict pattern test (each pullback shallower than the last, final ≤10%, flat-topped base); <b style={{ color: "#f59e0b" }}>loose base</b> = a valid breakout whose base does not contract. The strict gates emptied this screen through the Oct-2026 selloff, so they now label rather than filter — run <code>weekly_breakout_vcp.py --strict</code> to publish only true VCPs. <b style={{ color: "#64748b" }}>TR CONTR</b> &lt; 1 confirms volatility contraction. <b style={{ color: "#f59e0b" }}>NEAR EARN</b> = breakout within ±1 wk of a quarterly-results date (⚡ = likely earnings-driven, not a clean technical breakout; ? = no earnings data). Gates: liquid ≥ ₹2 cr/wk, price ≥ ₹30, listed ≥ 60 wk, close &gt; rising 30-wk SMA, volume ≥ 1.5× 20-wk avg, close in top 40% of range. Base window 20 wk (--base-len, spec range 8–40).
       </div>
     </div>
   );
